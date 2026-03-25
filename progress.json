@@ -1,0 +1,31 @@
+[
+  {
+    "name": "Slice 1: Hook script — state files + terminal tab titles",
+    "decisions_by_ai": [
+      "Added version: 1 field to state files as recommended in plan open question #3 for future-proofing",
+      "Used printf with \\033 for OSC 0 escape sequences (portable across shells)",
+      "Sanitized session_id for filename safety by replacing non-alphanumeric chars (except dash/underscore) with underscores — prevents path traversal attacks",
+      "Server auto-launch logic (A1.7, A1.8) deferred to Slice 3 per plan — not included in this slice"
+    ],
+    "diversions_from_plan": [
+      "Markdown stripping uses sed range deletion for code fences (```...```) instead of single-line pattern, since multiline code blocks span multiple lines",
+      "The strip_markdown function uses printf instead of echo to handle escape sequences correctly from jq output"
+    ],
+    "aha_moments": [
+      "sed uses \\( \\) for capture groups in basic mode, not ( ) — the initial implementation had invalid backreferences for link/image patterns",
+      "jq -r properly converts JSON \\n to real newlines, but sed line-anchored patterns (^#) need the input to have actual newlines to work — printf '%s' preserves them correctly"
+    ],
+    "test_instructions": [
+      "1. Run: echo '{\"session_id\":\"test-123\",\"cwd\":\"/tmp/test\"}' | bash hooks/tab-state.sh init",
+      "2. Check ~/.claude/tab-state/test-123.json exists with status 'starting'",
+      "3. Run: echo '{\"session_id\":\"test-123\"}' | bash hooks/tab-state.sh working",
+      "4. Verify status changed to 'working' in the JSON file",
+      "5. Run: echo '{\"session_id\":\"test-123\",\"last_assistant_message\":\"## Done\\n**All** tests pass\"}' | bash hooks/tab-state.sh stop",
+      "6. Verify status is 'done' and last_message_preview has markdown stripped",
+      "7. Run: echo '{\"session_id\":\"test-123\"}' | bash hooks/tab-state.sh cleanup",
+      "8. Verify the state file is deleted",
+      "9. To test with real Claude Code, add hook config to ~/.claude/settings.json per the PRD hook configuration section"
+    ],
+    "done": true
+  }
+]
