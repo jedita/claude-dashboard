@@ -86,5 +86,35 @@
       "10. Clean up: rm ~/.claude/tab-state/test-auto*.json"
     ],
     "done": true
+  },
+  {
+    "name": "Slice 4: Browser dashboard — static cards (no SSE yet)",
+    "decisions_by_ai": [
+      "Used Vite scaffolding with vue template, then stripped all boilerplate (HelloWorld, style.css, assets/) to start clean",
+      "Added vite.config.js proxy for /api -> localhost:3847 to support dev mode with hot reload (per plan open question #2)",
+      "Project groups sorted alphabetically by project name for consistent ordering across refreshes",
+      "Open and Copy ID buttons included in this slice (UI only) — the deep-link logic is trivial and there's no reason to defer the button markup to Slice 6",
+      "SPA fallback route added to server with regex /^(?!\\/api).*/ to serve index.html for client-side routing"
+    ],
+    "diversions_from_plan": [
+      "Plan says deep-links/actions belong to Slice 6, but the Open and Copy ID buttons are included in the card component already since the UI markup is minimal and the functionality is self-contained (window.open + clipboard API)",
+      "No separate favicon — removed the scaffold's favicon reference to keep things simple"
+    ],
+    "aha_moments": [
+      "The SPA fallback route in Express must be placed AFTER express.static() but the regex negative lookahead /^(?!\\/api).*/ correctly avoids intercepting API routes"
+    ],
+    "test_instructions": [
+      "1. Start server: cd server && node server.js",
+      "2. Open http://127.0.0.1:3847 in a browser — should show 'No active sessions' empty state",
+      "3. Create mock sessions: write JSON files to ~/.claude/tab-state/ with different statuses and cwds",
+      "4. Refresh browser — cards should appear grouped by project name (last segment of cwd)",
+      "5. Verify card elements: status emoji, session name (truncated at 15 chars), relative time, preview text",
+      "6. Verify cards with alive:false are grayed out with 'Session ended unexpectedly' label",
+      "7. Verify left border colors match status (green=working, blue=done, amber=attention, red=error, gray=starting)",
+      "8. Toggle OS dark mode — verify theme switches (background, text, card colors)",
+      "9. Test static assets: verify JS and CSS files load (check browser network tab)",
+      "10. Clean up: remove test session files from ~/.claude/tab-state/"
+    ],
+    "done": true
   }
 ]

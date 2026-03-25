@@ -119,6 +119,9 @@ function getSessionsWithLiveness() {
   });
 }
 
+// --- Static file serving ---
+const DIST_DIR = path.join(DASHBOARD_DIR, 'dist');
+
 // --- Express app ---
 const app = express();
 
@@ -156,6 +159,15 @@ function broadcastSSE(eventName, data) {
   for (const client of sseClients) {
     client.write(payload);
   }
+}
+
+// --- Serve static dashboard files (B6.1, B6.2) ---
+if (fs.existsSync(DIST_DIR)) {
+  app.use(express.static(DIST_DIR));
+  // SPA fallback: serve index.html for non-API routes
+  app.get(/^(?!\/api).*/, (req, res) => {
+    res.sendFile(path.join(DIST_DIR, 'index.html'));
+  });
 }
 
 // --- File watching with fs.watch ---
