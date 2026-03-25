@@ -27,5 +27,36 @@
       "9. To test with real Claude Code, add hook config to ~/.claude/settings.json per the PRD hook configuration section"
     ],
     "done": true
+  },
+  {
+    "name": "Slice 2: Express server — JSON API + file watching + SSE",
+    "decisions_by_ai": [
+      "Used native fs.watch instead of chokidar for file watching — chokidar failed to detect events in Docker/container environments while fs.watch works reliably. This also eliminates a dependency.",
+      "PID liveness uses a cache (Map) that is refreshed every 60s, with on-demand checks for uncached PIDs on API requests",
+      "SSE broadcasts a simple 'reload' signal rather than sending diff data — client re-fetches /api/sessions for full state, keeping the protocol simple as specified in PRD",
+      "PID file is cleaned up on process exit via 'exit' event handler with SIGINT/SIGTERM handlers",
+      "Invalid JSON state files are silently skipped with a console warning rather than crashing the server"
+    ],
+    "diversions_from_plan": [
+      "Replaced chokidar with native Node.js fs.watch — the plan specified chokidar but it failed in Docker environments. fs.watch works with zero dependencies and the macOS fsevents backend is equally performant.",
+      "The chokidar dependency was removed from package.json entirely"
+    ],
+    "aha_moments": [
+      "chokidar (v3) completely failed to emit events in the Docker/container test environment even with usePolling enabled, while native fs.watch worked perfectly — a reminder that native APIs can be more reliable than popular libraries in constrained environments",
+      "fs.watch provides the filename parameter on Linux/macOS which is sufficient for filtering .json files — no need for the more complex glob patterns chokidar offers"
+    ],
+    "test_instructions": [
+      "1. Start server: cd server && node server.js",
+      "2. In another terminal: curl http://127.0.0.1:3847/api/health — should return {\"ok\":true}",
+      "3. curl http://127.0.0.1:3847/api/sessions — should return [] (empty array)",
+      "4. Create a session: echo '{\"session_id\":\"test-1\",\"cwd\":\"/tmp/test\"}' | bash hooks/tab-state.sh init",
+      "5. curl http://127.0.0.1:3847/api/sessions — should return array with one session including alive: true/false",
+      "6. Test SSE: curl -N http://127.0.0.1:3847/api/events (keep running), then in another terminal create/modify/delete state files — SSE events should appear",
+      "7. Test port conflict: start a second server on same port — should exit with clear error",
+      "8. Test custom port: PORT=4444 node server.js — should bind to port 4444",
+      "9. Test pruning: create a state file with old mtime (touch -t 202603230000 file), restart server, verify it's deleted",
+      "10. Test invalid JSON: echo 'not json' > ~/.claude/tab-state/bad.json, then curl /api/sessions — bad file should be skipped"
+    ],
+    "done": true
   }
 ]
