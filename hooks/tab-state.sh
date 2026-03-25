@@ -10,6 +10,11 @@ set -euo pipefail
 
 EVENT="${1:-}"
 STATE_DIR="$HOME/.claude/tab-state"
+DASHBOARD_DIR="$HOME/.claude/dashboard"
+SERVER_SCRIPT="$DASHBOARD_DIR/server.js"
+SERVER_PID_FILE="$DASHBOARD_DIR/server.pid"
+SERVER_LOG="$DASHBOARD_DIR/server.log"
+HEALTH_URL="http://127.0.0.1:3847/api/health"
 
 # Ensure state directory exists
 mkdir -p "$STATE_DIR"
@@ -85,6 +90,37 @@ get_session_name() {
   fi
 }
 
+# Auto-launch the dashboard server if not running (only called on init)
+auto_launch_server() {
+  # Quick check: is server already responding?
+  if curl -s --max-time 1 "$HEALTH_URL" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  # Check PID file — if a live process exists, server may still be starting
+  if [ -f "$SERVER_PID_FILE" ]; then
+    local existing_pid
+    existing_pid="$(cat "$SERVER_PID_FILE" 2>/dev/null)"
+    if [ -n "$existing_pid" ] && kill -0 "$existing_pid" 2>/dev/null; then
+      return 0
+    fi
+    # PID file points to dead process — remove it
+    rm -f "$SERVER_PID_FILE"
+  fi
+
+  # Ensure server script exists
+  if [ ! -f "$SERVER_SCRIPT" ]; then
+    echo "tab-state.sh: server script not found at $SERVER_SCRIPT" >&2
+    return 1
+  fi
+
+  # Ensure dashboard directory exists
+  mkdir -p "$DASHBOARD_DIR"
+
+  # Start server in background
+  nohup node "$SERVER_SCRIPT" >> "$SERVER_LOG" 2>&1 &
+}
+
 case "$EVENT" in
   init)
     # Parse fields from stdin
@@ -127,6 +163,9 @@ case "$EVENT" in
 
     atomic_write "$STATE"
     set_tab_title "🔄 $SESSION_NAME"
+
+    # Auto-launch server if not running (A1.7, A1.8)
+    auto_launch_server
     ;;
 
   working)

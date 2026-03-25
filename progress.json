@@ -58,5 +58,33 @@
       "10. Test invalid JSON: echo 'not json' > ~/.claude/tab-state/bad.json, then curl /api/sessions — bad file should be skipped"
     ],
     "done": true
+  },
+  {
+    "name": "Slice 3: Hook → server auto-launch",
+    "decisions_by_ai": [
+      "The auto_launch_server function is defined as a bash function and only called from the init event handler, keeping other events fast (no curl overhead)",
+      "Dead PID recovery: if PID file exists but the process is dead, the stale PID file is removed before starting a new server",
+      "Server script location uses ~/.claude/dashboard/server.js matching the PRD file structure — requires server files to be copied there (done by install.sh in Slice 6)",
+      "The function returns early (return 1) with a stderr warning if the server script doesn't exist, rather than failing the entire hook — the state file is still written successfully"
+    ],
+    "diversions_from_plan": [
+      "The plan mentions writing PID to server.pid from the hook, but the server already writes its own PID file on startup (implemented in Slice 2). The hook relies on the server's PID file for race condition detection instead of writing it separately."
+    ],
+    "aha_moments": [
+      "The server already handles PID file creation in server.js (written in Slice 2), so the hook only needs to READ the PID file for race condition guarding, not write it. This avoids a race where the hook writes a PID but the server hasn't started listening yet."
+    ],
+    "test_instructions": [
+      "1. Ensure server is NOT running: kill any existing server process and remove PID file",
+      "2. Run: echo '{\"session_id\":\"test-auto\",\"cwd\":\"/tmp/test\"}' | bash hooks/tab-state.sh init",
+      "3. Wait 2 seconds, then: curl http://127.0.0.1:3847/api/health — should return {\"ok\":true}",
+      "4. Note the PID: cat ~/.claude/dashboard/server.pid",
+      "5. Run a second init: echo '{\"session_id\":\"test-auto-2\",\"cwd\":\"/tmp/test2\"}' | bash hooks/tab-state.sh init",
+      "6. Verify PID unchanged: cat ~/.claude/dashboard/server.pid — should match step 4",
+      "7. Kill the server, write a fake dead PID: echo 99999 > ~/.claude/dashboard/server.pid",
+      "8. Run init again — server should detect dead PID, clean up, and start a new server",
+      "9. Verify: curl http://127.0.0.1:3847/api/health returns {\"ok\":true}",
+      "10. Clean up: rm ~/.claude/tab-state/test-auto*.json"
+    ],
+    "done": true
   }
 ]
