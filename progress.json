@@ -142,5 +142,36 @@
       "8. Restart the server — indicator should return to '● Connected' (green) and data should refresh"
     ],
     "done": true
+  },
+  {
+    "name": "Slice 6: Deep-links + actions + install script",
+    "decisions_by_ai": [
+      "Open and Copy ID buttons were already implemented in Slice 4's SessionCard.vue — no additional work needed for D1/D2 functionality",
+      "install.sh uses rm -rf on dist/ before copying to ensure clean overwrites on re-install",
+      "Hook script is chmod +x'd during install for direct execution",
+      "The install script prints both Claude hook config AND VS Code terminal tab settings needed for OSC 0 titles"
+    ],
+    "diversions_from_plan": [
+      "The plan listed deep-links and button actions as Slice 6 scope, but these were already implemented in Slice 4 (SessionCard.vue already had fully functional Open and Copy ID buttons). Slice 6 was therefore focused entirely on the install.sh script."
+    ],
+    "aha_moments": [
+      "The deep-link and copy ID functionality was trivial enough that it was naturally included in Slice 4 when building the card component — the plan's deferral to Slice 6 was overly conservative"
+    ],
+    "test_instructions": [
+      "1. Run: bash install.sh",
+      "2. Verify ~/.claude/tab-state/ directory exists",
+      "3. Verify ~/.claude/hooks/tab-state.sh exists and is executable",
+      "4. Verify ~/.claude/dashboard/dist/index.html exists",
+      "5. Verify ~/.claude/dashboard/server.js exists",
+      "6. Verify ~/.claude/dashboard/node_modules/express/ exists",
+      "7. Run install.sh a second time — should complete without errors (idempotency)",
+      "8. Verify the script prints hook configuration JSON and VS Code settings (does NOT overwrite settings.json)",
+      "9. Start server: node ~/.claude/dashboard/server.js",
+      "10. Open http://127.0.0.1:3847 — dashboard should load",
+      "11. Create test session files and verify cards appear with Open/Copy ID buttons",
+      "12. Click 'Open' button — should trigger vscode:// URI",
+      "13. Click 'Copy ID' — should copy session ID and show 'Copied!' feedback"
+    ],
+    "done": true
   }
 ]
