@@ -146,7 +146,7 @@ app.get('/api/events', (req, res) => {
     Connection: 'keep-alive',
   });
 
-  res.write(':connected\n\n');
+  res.write('retry: 3000\n\n');
   sseClients.add(res);
 
   req.on('close', () => {

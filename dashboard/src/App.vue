@@ -2,6 +2,7 @@
   <div class="dashboard">
     <header class="dashboard-header">
       <h1>Claude Code Dashboard</h1>
+      <ConnectionStatus :status="connectionStatus" />
     </header>
     <main class="dashboard-main">
       <div v-if="loading" class="empty-state">Loading sessions…</div>
@@ -28,8 +29,9 @@
 import { useSessions } from './composables/useSessions.js'
 import { useRelativeTime } from './composables/useRelativeTime.js'
 import ProjectGroup from './components/ProjectGroup.vue'
+import ConnectionStatus from './components/ConnectionStatus.vue'
 
-const { groupedSessions, loading, error } = useSessions()
+const { groupedSessions, loading, error, connectionStatus } = useSessions()
 const { tick } = useRelativeTime()
 </script>
 

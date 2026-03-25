@@ -116,5 +116,31 @@
       "10. Clean up: remove test session files from ~/.claude/tab-state/"
     ],
     "done": true
+  },
+  {
+    "name": "Slice 5: Live updates — SSE + connection status",
+    "decisions_by_ai": [
+      "Used a 10-second timeout before transitioning from 'reconnecting' to 'disconnected' — gives EventSource's built-in auto-reconnect time to succeed before showing the worst-case indicator",
+      "On every SSE (re)connect, fresh data is fetched via fetchSessions() to ensure the dashboard is up-to-date after any period of disconnection",
+      "Added retry: 3000 to SSE initial response to configure EventSource's built-in 3-second reconnect interval as specified in the plan",
+      "ConnectionStatus component uses scoped CSS with the status class on the wrapper div for clean selector targeting"
+    ],
+    "diversions_from_plan": [
+      "No diversions — implementation matches the plan scope exactly"
+    ],
+    "aha_moments": [
+      "EventSource's onopen fires on reconnection too, not just initial connect — this is ideal for triggering a fresh fetchSessions() automatically after reconnect without needing separate logic"
+    ],
+    "test_instructions": [
+      "1. Start server: cd server && node server.js",
+      "2. Open http://127.0.0.1:3847 in a browser — header should show '● Connected' with green dot",
+      "3. Create a session file: echo '{\"session_id\":\"live-1\",\"cwd\":\"/tmp/test\",\"status\":\"working\",\"name\":\"live-test\",\"pid\":1,\"last_activity\":\"2026-03-25T10:00:00Z\",\"created_at\":\"2026-03-25T10:00:00Z\"}' > ~/.claude/tab-state/live-1.json",
+      "4. Card should appear on dashboard WITHOUT page refresh",
+      "5. Modify the file to change status to 'done' — card should update live",
+      "6. Delete the file: rm ~/.claude/tab-state/live-1.json — card should disappear",
+      "7. Stop the server (Ctrl+C) — indicator should change to '● Reconnecting…' (amber) then '● Disconnected' (red)",
+      "8. Restart the server — indicator should return to '● Connected' (green) and data should refresh"
+    ],
+    "done": true
   }
 ]

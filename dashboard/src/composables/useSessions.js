@@ -1,8 +1,11 @@
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 
 const sessions = ref([])
 const loading = ref(true)
 const error = ref(null)
+
+// Connection status: 'connected', 'reconnecting', 'disconnected'
+const connectionStatus = ref('disconnected')
 
 async function fetchSessions() {
   try {
@@ -46,9 +49,67 @@ const groupedSessions = computed(() => {
     .map(([project, sessions]) => ({ project, sessions }))
 })
 
+let eventSource = null
+let disconnectTimer = null
+
+function connectSSE() {
+  if (eventSource) {
+    eventSource.close()
+  }
+
+  eventSource = new EventSource('/api/events')
+
+  eventSource.onopen = () => {
+    if (disconnectTimer) {
+      clearTimeout(disconnectTimer)
+      disconnectTimer = null
+    }
+    connectionStatus.value = 'connected'
+    // Fetch fresh data on (re)connect
+    fetchSessions()
+  }
+
+  eventSource.addEventListener('session-update', () => {
+    fetchSessions()
+  })
+
+  eventSource.onerror = () => {
+    // EventSource automatically reconnects; mark as reconnecting
+    if (connectionStatus.value === 'connected') {
+      connectionStatus.value = 'reconnecting'
+    }
+    // If still not reconnected after 10s, mark as disconnected
+    if (!disconnectTimer) {
+      disconnectTimer = setTimeout(() => {
+        disconnectTimer = null
+        if (connectionStatus.value === 'reconnecting') {
+          connectionStatus.value = 'disconnected'
+        }
+      }, 10_000)
+    }
+  }
+}
+
+function disconnectSSE() {
+  if (eventSource) {
+    eventSource.close()
+    eventSource = null
+  }
+  if (disconnectTimer) {
+    clearTimeout(disconnectTimer)
+    disconnectTimer = null
+  }
+  connectionStatus.value = 'disconnected'
+}
+
 export function useSessions() {
   onMounted(() => {
     fetchSessions()
+    connectSSE()
+  })
+
+  onUnmounted(() => {
+    disconnectSSE()
   })
 
   return {
@@ -56,6 +117,7 @@ export function useSessions() {
     groupedSessions,
     loading,
     error,
+    connectionStatus,
     fetchSessions,
   }
 }
