@@ -48,7 +48,7 @@ const borderColor = computed(() => {
 
 const truncatedName = computed(() => {
   const name = props.session.name || props.session.session_id || ''
-  return name.length > 15 ? name.slice(0, 15) + '…' : name
+  return name.length > 30 ? name.slice(0, 30) + '…' : name
 })
 
 const relativeTime = computed(() => {
@@ -81,8 +81,8 @@ async function copyId() {
   background: var(--card-bg);
   border-radius: 8px;
   padding: 12px 16px;
-  min-width: 200px;
-  max-width: 260px;
+  min-width: 280px;
+  max-width: 400px;
   display: flex;
   flex-direction: column;
   gap: 6px;

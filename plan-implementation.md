@@ -64,6 +64,15 @@ A local-only, browser-based dashboard that gives a bird's-eye view of all active
 
 **Done when:** State files reliably appear/update/disappear across the full session lifecycle (start → work → stop → end).
 
+**Test scenarios that must pass:**
+- A1.1–A1.10 (Session initialization — state file creation, naming, OSC title, atomic writes, performance)
+- A2.1–A2.4 (Working state — status update, timestamp, tab title, field preservation)
+- A3.1–A3.6 (Done state — status, preview text, markdown stripping, tab title)
+- A4.1–A4.3 (Error state — status, tab title, timestamp)
+- A5.1–A5.3 (Attention state — status, tab title, timestamp)
+- A6.1–A6.2 (Cleanup — state file deletion, idempotency)
+- A7.1–A7.5 (Edge cases — race conditions, missing directory, missing jq, malformed JSON, special characters)
+
 ---
 
 ### Slice 2: Express server — JSON API + file watching + SSE
@@ -93,6 +102,14 @@ A local-only, browser-based dashboard that gives a bird's-eye view of all active
 
 **Done when:** API returns correct, live session data and SSE events fire within ~500ms of state file changes.
 
+**Test scenarios that must pass:**
+- B1.1–B1.2 (Health endpoint — response, empty state)
+- B2.1–B2.6 (Sessions endpoint — array response, alive boolean, empty array, add/delete/invalid JSON handling)
+- B3.1–B3.6 (SSE events — connection, create/modify/delete events, debounce, multiple clients)
+- B4.1–B4.5 (PID liveness — periodic check, dead PID detection, alive PID, done+dead, no disk modification)
+- B5.1–B5.7 (Startup — 24h pruning, preservation, localhost binding, default port, PORT env var, port conflict, directory creation)
+- B7.2 (PID file creation)
+
 ---
 
 ### Slice 3: Hook → server auto-launch
@@ -113,6 +130,10 @@ A local-only, browser-based dashboard that gives a bird's-eye view of all active
 4. Start a second session — verify no duplicate server process
 
 **Done when:** Server reliably auto-starts on first session and doesn't duplicate.
+
+**Test scenarios that must pass:**
+- A1.7–A1.8 (Server auto-launch on init, skip if already running)
+- B7.1–B7.3 (Race condition guard — single instance, PID file, dead PID recovery)
 
 ---
 
@@ -146,6 +167,14 @@ A local-only, browser-based dashboard that gives a bird's-eye view of all active
 
 **Done when:** Dashboard renders all active sessions with correct grouping, status colors, and relative times. Manual refresh shows updated data.
 
+**Test scenarios that must pass:**
+- C1.1–C1.7 (Card display — status emoji, border color, name truncation, preview, stale styling)
+- C2.1–C2.7 (Grouping and sorting — project grouping, heading, empty projects, creation-order, stable positions)
+- C4.1–C4.3 (Relative timestamps — format, 30s refresh, transition)
+- C6.1–C6.5 (Theme — light mode, dark mode, live switching, card theming, status colors consistent)
+- C7.1 (Empty state — meaningful message when no sessions)
+- B6.1–B6.2 (Static file serving — root URL, assets)
+
 ---
 
 ### Slice 5: Live updates — SSE + connection status
@@ -165,6 +194,11 @@ A local-only, browser-based dashboard that gives a bird's-eye view of all active
 5. Restart server → indicator turns green, data refreshes
 
 **Done when:** Dashboard is fully live — no manual refresh needed, and connection state is visible.
+
+**Test scenarios that must pass:**
+- C3.1–C3.5 (Live updates — status change, new session, session removal, auto-reconnect, fresh data after reconnect)
+- C5.1–C5.4 (Connection status — connected, reconnecting, disconnected, recovery)
+- C7.2 (Server unreachable on initial load — connection error state)
 
 ---
 
@@ -188,6 +222,17 @@ A local-only, browser-based dashboard that gives a bird's-eye view of all active
 3. Run `install.sh` on a clean machine → everything works
 
 **Done when:** Full end-to-end flow works: sessions appear, update live, deep-links work, and installation is scripted.
+
+**Test scenarios that must pass:**
+- D1.1–D1.4 (Open button — URI trigger, correct session, VS Code foreground, missing extension)
+- D2.1–D2.3 (Copy ID — clipboard, visual feedback, usable with `claude --resume`)
+- E1–E8 (Installation — directory creation, file copies, build, npm install, instructions, idempotency, no settings overwrite)
+- F1.1–F1.6 (Full lifecycle — start→work→stop→error→attention→end)
+- F2.1–F2.4 (Multiple sessions — different projects, same project, independent updates)
+- F3.1–F3.3 (Server restart — state preserved, SSE reconnect, pruning)
+- F4.1–F4.3 (Browser refresh — loads sessions, SSE re-established, consistent ordering)
+- F5.1–F5.3 (Crash recovery — PID liveness detection, stale card, orphan pruning)
+- F6.1–F6.3 (Performance — hook < 200ms, dashboard < 500ms, 10 sessions responsive)
 
 ---
 
