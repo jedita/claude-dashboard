@@ -112,6 +112,16 @@ export function useSessions() {
     disconnectSSE()
   })
 
+  async function dismissSession(sessionId) {
+    try {
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      await fetchSessions()
+    } catch (err) {
+      console.error('Failed to dismiss session:', err)
+    }
+  }
+
   return {
     sessions,
     groupedSessions,
@@ -119,5 +129,6 @@ export function useSessions() {
     error,
     connectionStatus,
     fetchSessions,
+    dismissSession,
   }
 }

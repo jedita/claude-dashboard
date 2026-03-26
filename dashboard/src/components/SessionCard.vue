@@ -17,6 +17,7 @@
     <div class="card-actions">
       <button class="btn btn-open" @click="openInVSCode">Open</button>
       <button class="btn btn-copy" @click="copyId">{{ copyLabel }}</button>
+      <button v-if="!session.alive" class="btn btn-dismiss" @click="emit('dismiss', session.session_id)">Dismiss</button>
     </div>
   </div>
 </template>
@@ -29,6 +30,8 @@ const props = defineProps({
   session: { type: Object, required: true },
   tick: { type: Number, default: 0 },
 })
+
+const emit = defineEmits(['dismiss'])
 
 const STATUS_MAP = {
   starting: { emoji: null, color: '#95A5A6' },
@@ -85,27 +88,31 @@ async function copyId() {
 
 <style scoped>
 .session-card {
-  border-left: 4px solid var(--border-color);
+  border-left: 3px solid var(--border-color);
   background: var(--card-bg);
-  border-radius: 8px;
-  padding: 12px 16px;
-  min-width: 280px;
-  max-width: 400px;
+  border-radius: 10px;
+  padding: var(--space-md) var(--space-lg);
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-  transition: opacity 0.2s;
+  gap: var(--space-xs);
+  box-shadow: var(--shadow-sm);
+  transition: opacity 0.2s, box-shadow 0.2s;
+}
+
+.session-card:hover {
+  box-shadow: var(--shadow-md);
 }
 
 .session-card.stale {
-  opacity: 0.5;
+  opacity: 0.45;
 }
 
+/* -- Header: status + name -- */
 .card-header {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-sm);
+  margin-bottom: 2px;
 }
 
 .status-indicator {
@@ -148,25 +155,32 @@ async function copyId() {
 
 .session-name {
   font-weight: 600;
+  font-size: 0.95em;
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* -- Meta: time -- */
 .card-time {
-  font-size: 0.8em;
+  font-size: 0.78em;
   color: var(--text-secondary);
 }
 
+/* -- Preview -- */
 .card-preview {
-  font-size: 0.85em;
+  font-size: 0.82em;
   color: var(--text-secondary);
   cursor: pointer;
   display: flex;
   align-items: baseline;
-  gap: 4px;
+  gap: var(--space-xs);
   user-select: none;
+  margin-top: var(--space-xs);
+  padding: var(--space-sm) var(--space-sm);
+  background: var(--bg);
+  border-radius: 6px;
 }
 
 .card-preview:hover {
@@ -190,39 +204,64 @@ async function copyId() {
 
 .preview-chevron {
   font-size: 0.75em;
-  opacity: 0.5;
+  opacity: 0.4;
   flex-shrink: 0;
   line-height: 1.6;
 }
 
+/* -- Stale warning -- */
 .card-stale {
-  font-size: 0.8em;
+  font-size: 0.78em;
   color: #E74C3C;
   font-style: italic;
 }
 
+/* -- Actions -- */
 .card-actions {
   display: flex;
-  gap: 8px;
-  margin-top: 4px;
+  gap: var(--space-sm);
+  margin-top: var(--space-sm);
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--border-subtle);
 }
 
 .btn {
-  padding: 4px 10px;
-  border-radius: 4px;
+  padding: var(--space-xs) var(--space-md);
+  border-radius: 6px;
   border: 1px solid var(--border-color);
-  background: var(--card-bg);
-  color: var(--text-primary);
+  background: transparent;
+  color: var(--text-secondary);
   cursor: pointer;
-  font-size: 0.8em;
+  font-size: 0.78em;
+  font-weight: 500;
+  transition: background 0.15s, color 0.15s;
 }
 
 .btn:hover {
-  opacity: 0.8;
+  background: var(--bg);
+  color: var(--text-primary);
 }
 
 .btn-open {
   background: var(--text-primary);
   color: var(--card-bg);
+  border-color: var(--text-primary);
+}
+
+.btn-open:hover {
+  opacity: 0.85;
+  background: var(--text-primary);
+  color: var(--card-bg);
+}
+
+.btn-dismiss {
+  margin-left: auto;
+  color: #E74C3C;
+  border-color: rgba(231, 76, 60, 0.3);
+}
+
+.btn-dismiss:hover {
+  background: rgba(231, 76, 60, 0.1);
+  color: #E74C3C;
 }
 </style>

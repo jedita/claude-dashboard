@@ -26,27 +26,35 @@ const label = computed(() => {
 .connection-status {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 0.85em;
+  gap: var(--space-sm);
+  font-size: 0.78em;
+  font-weight: 500;
   color: var(--text-secondary);
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: 20px;
+  background: var(--surface);
 }
 
 .status-dot {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   display: inline-block;
+  flex-shrink: 0;
 }
 
 .connected .status-dot {
   background-color: #27AE60;
+  box-shadow: 0 0 0 3px rgba(39, 174, 96, 0.15);
 }
 
 .reconnecting .status-dot {
   background-color: #F39C12;
+  box-shadow: 0 0 0 3px rgba(243, 156, 18, 0.15);
 }
 
 .disconnected .status-dot {
   background-color: #E74C3C;
+  box-shadow: 0 0 0 3px rgba(231, 76, 60, 0.15);
 }
 </style>

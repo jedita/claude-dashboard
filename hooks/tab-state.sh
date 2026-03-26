@@ -63,6 +63,14 @@ now_iso() {
 # the user's terminal.
 # Returns the TTY path on stdout, or exit 1 if not found.
 discover_tty() {
+  # Fast path: /dev/tty refers to the controlling terminal and works even
+  # when ps -o tty= shows "??" (common with piped stdin in hook subprocesses).
+  if [ -w /dev/tty ]; then
+    echo /dev/tty
+    return 0
+  fi
+
+  # Fallback: walk the process tree looking for an ancestor with a real TTY.
   local pid="${BASHPID:-$$}"
   local i=0
   while [ $i -lt 10 ]; do
@@ -155,12 +163,14 @@ generate_ai_name() {
   local state_file="$2"
   local tty_path="${3:-}"
 
+  # Disable errexit for the claude call — the CLI may exit non-zero even on
+  # success, and pipefail would propagate that, killing this background subshell.
   local title
-  title=$(CLAUDE_TAB_TITLE_GENERATING=1 claude --tools "" \
+  title=$(set +e +o pipefail; CLAUDE_TAB_TITLE_GENERATING=1 claude --tools "" \
     -p "You are a tab-title generator. Given a user prompt, output ONLY a short tab title (3-5 words, no punctuation, no quotes). Do NOT answer the prompt. Do NOT explain. Output just and ONLY a tab title.
 
 User prompt: $user_prompt" \
-    < /dev/null 2>/dev/null | tr -d '\n' | sed 's/^ *//; s/ *$//' | head -c 50)
+    < /dev/null 2>/dev/null | tr -d '\n' | sed 's/^ *//; s/ *$//' | head -c 50) || true
 
   [ -z "$title" ] && return
 
@@ -237,6 +247,9 @@ case "$EVENT" in
     NOW="$(now_iso)"
     PID="${PPID:-0}"
 
+    # Discover TTY early (process tree is intact at init) and cache for later events
+    CURRENT_TTY="$(discover_tty 2>/dev/null)" || CURRENT_TTY=""
+
     STATE=$(jq -n \
       --arg sid "$SESSION_ID" \
       --arg name "$SESSION_NAME" \
@@ -245,6 +258,7 @@ case "$EVENT" in
       --argjson pid "$PID" \
       --arg last_activity "$NOW" \
       --arg created_at "$NOW" \
+      --arg tty "$CURRENT_TTY" \
       '{
         version: 1,
         session_id: $sid,
@@ -255,11 +269,12 @@ case "$EVENT" in
         last_activity: $last_activity,
         last_message_preview: "",
         created_at: $created_at,
-        ai_name_generated: false
+        ai_name_generated: false,
+        tty_path: $tty
       }')
 
     atomic_write "$STATE"
-    set_tab_title "🔄 $SESSION_NAME" || true
+    set_tab_title "🔄 $SESSION_NAME" "$CURRENT_TTY" || true
 
     # Purge stale sessions from dead processes
     cleanup_stale_sessions
@@ -275,6 +290,7 @@ case "$EVENT" in
     fi
 
     SESSION_NAME="$(get_session_name)"
+    STORED_TTY="$(jq -r '.tty_path // empty' "$STATE_FILE" 2>/dev/null)"
     NOW="$(now_iso)"
     AI_GENERATED="$(jq -r '.ai_name_generated // false' "$STATE_FILE" 2>/dev/null)"
 
@@ -290,14 +306,11 @@ case "$EVENT" in
         "$STATE_FILE")
 
       atomic_write "$STATE"
-      set_tab_title "🟢 $SESSION_NAME" || true
-
-      # Discover TTY now (while process tree is intact) and pass to background
-      CURRENT_TTY="$(discover_tty 2>/dev/null)" || CURRENT_TTY=""
+      set_tab_title "🟢 $SESSION_NAME" "$STORED_TTY" || true
 
       # Launch AI title generation in background — updates tab when ready (~10s)
       if [ -n "$USER_PROMPT" ]; then
-        generate_ai_name "$USER_PROMPT" "$STATE_FILE" "$CURRENT_TTY" &
+        generate_ai_name "$USER_PROMPT" "$STATE_FILE" "$STORED_TTY" &
         disown
       fi
     else
@@ -308,7 +321,7 @@ case "$EVENT" in
         "$STATE_FILE")
 
       atomic_write "$STATE"
-      set_tab_title "🟢 $SESSION_NAME" || true
+      set_tab_title "🟢 $SESSION_NAME" "$STORED_TTY" || true
     fi
     ;;
 
@@ -319,6 +332,7 @@ case "$EVENT" in
     fi
 
     SESSION_NAME="$(get_session_name)"
+    STORED_TTY="$(jq -r '.tty_path // empty' "$STATE_FILE" 2>/dev/null)"
     NOW="$(now_iso)"
     RAW_MESSAGE="$(echo "$INPUT" | jq -r '.last_assistant_message // empty')"
     PREVIEW="$(strip_markdown "$RAW_MESSAGE")"
@@ -327,11 +341,11 @@ case "$EVENT" in
       --arg status "done" \
       --arg last_activity "$NOW" \
       --arg preview "$PREVIEW" \
-      '.status = $status | .last_activity = $last_activity | .last_message_preview = $preview' \
+      '.status = $status | .last_activity = $last_activity | .last_message_preview = $preview | .ai_name_generated = false' \
       "$STATE_FILE")
 
     atomic_write "$STATE"
-    set_tab_title "✅ $SESSION_NAME" || true
+    set_tab_title "✅ $SESSION_NAME" "$STORED_TTY" || true
     ;;
 
   error)
@@ -341,6 +355,7 @@ case "$EVENT" in
     fi
 
     SESSION_NAME="$(get_session_name)"
+    STORED_TTY="$(jq -r '.tty_path // empty' "$STATE_FILE" 2>/dev/null)"
     NOW="$(now_iso)"
 
     STATE=$(jq \
@@ -350,7 +365,7 @@ case "$EVENT" in
       "$STATE_FILE")
 
     atomic_write "$STATE"
-    set_tab_title "❌ $SESSION_NAME" || true
+    set_tab_title "❌ $SESSION_NAME" "$STORED_TTY" || true
     ;;
 
   attention)
@@ -360,6 +375,7 @@ case "$EVENT" in
     fi
 
     SESSION_NAME="$(get_session_name)"
+    STORED_TTY="$(jq -r '.tty_path // empty' "$STATE_FILE" 2>/dev/null)"
     NOW="$(now_iso)"
 
     STATE=$(jq \
@@ -369,10 +385,15 @@ case "$EVENT" in
       "$STATE_FILE")
 
     atomic_write "$STATE"
-    set_tab_title "⚠️ $SESSION_NAME" || true
+    set_tab_title "⚠️ $SESSION_NAME" "$STORED_TTY" || true
     ;;
 
   cleanup)
+    # Reset terminal tab title before removing state
+    if [ -f "$STATE_FILE" ]; then
+      STORED_TTY="$(jq -r '.tty_path // empty' "$STATE_FILE" 2>/dev/null)"
+      set_tab_title "" "$STORED_TTY" || true
+    fi
     # Remove state file
     rm -f "$STATE_FILE"
     ;;

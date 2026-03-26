@@ -15,6 +15,7 @@ const PID_FILE = path.join(DASHBOARD_DIR, 'server.pid');
 const SSE_DEBOUNCE_MS = 300;
 const PID_LIVENESS_INTERVAL_MS = 60_000;
 const PRUNE_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+const DEAD_SESSION_GRACE_MS = 5 * 60 * 1000; // 5 minutes after last activity before removing dead sessions
 
 // --- Ensure directories exist ---
 fs.mkdirSync(STATE_DIR, { recursive: true });
@@ -136,6 +137,22 @@ app.get('/api/sessions', (req, res) => {
   res.json(sessions);
 });
 
+// Dismiss a session — removes its state file
+app.delete('/api/sessions/:id', (req, res) => {
+  const safeId = req.params.id.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const filePath = path.join(STATE_DIR, `${safeId}.json`);
+  try {
+    fs.unlinkSync(filePath);
+    res.json({ ok: true });
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      res.status(404).json({ error: 'Session not found' });
+    } else {
+      res.status(500).json({ error: err.message });
+    }
+  }
+});
+
 // SSE endpoint — B3.1–B3.6
 const sseClients = new Set();
 
@@ -190,9 +207,34 @@ fs.watch(STATE_DIR, (eventType, filename) => {
   }
 });
 
+// --- Auto-prune dead sessions past grace period ---
+function pruneDeadSessions() {
+  const now = Date.now();
+  const sessions = readAllSessions();
+  for (const session of sessions) {
+    if (!session.pid || !session.session_id) continue;
+    const alive = checkPidAlive(session.pid);
+    if (alive) continue;
+
+    // Check if last_activity is old enough past the grace period
+    const lastActivity = session.last_activity ? new Date(session.last_activity).getTime() : 0;
+    if (now - lastActivity > DEAD_SESSION_GRACE_MS) {
+      const safeId = session.session_id.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const filePath = path.join(STATE_DIR, `${safeId}.json`);
+      try {
+        fs.unlinkSync(filePath);
+        console.log(`Auto-pruned dead session: ${session.session_id} (pid ${session.pid})`);
+      } catch (err) {
+        // File may already be gone
+      }
+    }
+  }
+}
+
 // --- PID liveness check interval — B4.1 ---
 setInterval(() => {
   refreshPidLiveness();
+  pruneDeadSessions();
   broadcastSSE('session-update', { type: 'reload' });
 }, PID_LIVENESS_INTERVAL_MS);
 

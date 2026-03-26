@@ -7,6 +7,7 @@
         :key="session.session_id"
         :session="session"
         :tick="tick"
+        @dismiss="id => emit('dismiss', id)"
       />
     </div>
   </section>
@@ -20,25 +21,30 @@ defineProps({
   sessions: { type: Array, required: true },
   tick: { type: Number, default: 0 },
 })
+
+const emit = defineEmits(['dismiss'])
 </script>
 
 <style scoped>
 .project-group {
-  margin-bottom: 24px;
+  /* No bottom margin — parent gap handles separation */
 }
 
 .project-heading {
-  font-size: 1.1em;
+  font-size: 0.75em;
   font-weight: 600;
-  color: var(--text-primary);
-  margin: 0 0 12px 0;
-  padding-bottom: 4px;
-  border-bottom: 1px solid var(--border-color);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  margin: 0 0 var(--space-md) 0;
+  padding: 0;
+  border: none;
 }
 
 .cards-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: var(--space-md);
+  align-items: start;
 }
 </style>
