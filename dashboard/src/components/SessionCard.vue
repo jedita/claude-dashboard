@@ -1,12 +1,17 @@
 <template>
   <div class="session-card" :class="{ stale: !session.alive }" :style="{ borderLeftColor: borderColor }">
     <div class="card-header">
-      <span class="status-emoji">{{ statusEmoji }}</span>
+      <span class="status-indicator">
+        <span v-if="session.status === 'working'" class="working-spinner"></span>
+        <span v-else-if="session.status === 'starting'" class="new-dot"></span>
+        <span v-else class="status-emoji">{{ statusEmoji }}</span>
+      </span>
       <span class="session-name" :title="session.name">{{ truncatedName }}</span>
     </div>
     <div class="card-time">{{ relativeTime }}</div>
-    <div class="card-preview" v-if="session.last_message_preview">
-      {{ session.last_message_preview }}
+    <div class="card-preview" v-if="session.last_message_preview" @click="previewExpanded = !previewExpanded">
+      <span class="preview-text" :class="{ expanded: previewExpanded }">{{ session.last_message_preview }}</span>
+      <span class="preview-chevron">{{ previewExpanded ? '▴' : '▾' }}</span>
     </div>
     <div class="card-stale" v-if="!session.alive">Session ended unexpectedly</div>
     <div class="card-actions">
@@ -26,8 +31,8 @@ const props = defineProps({
 })
 
 const STATUS_MAP = {
-  starting: { emoji: '🔄', color: '#95A5A6' },
-  working: { emoji: '🟢', color: '#27AE60' },
+  starting: { emoji: null, color: '#95A5A6' },
+  working: { emoji: null, color: '#E67E22' },
   done: { emoji: '✅', color: '#3498DB' },
   attention: { emoji: '⚠️', color: '#F39C12' },
   error: { emoji: '❌', color: '#E74C3C' },
@@ -56,6 +61,8 @@ const relativeTime = computed(() => {
   void props.tick
   return formatRelativeTime(props.session.last_activity)
 })
+
+const previewExpanded = ref(false)
 
 function openInVSCode() {
   window.open(`vscode://anthropic.claude-code/open?session=${props.session.session_id}`)
@@ -100,9 +107,42 @@ async function copyId() {
   gap: 6px;
 }
 
+.status-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1em;
+  height: 1.1em;
+  flex-shrink: 0;
+}
+
 .status-emoji {
   font-size: 1.1em;
   line-height: 1;
+}
+
+.working-spinner {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border: 2.5px solid rgba(230, 126, 34, 0.25);
+  border-top-color: #E67E22;
+  border-right-color: #E67E22;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.new-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 2px solid #95A5A6;
+  border-radius: 50%;
+  opacity: 0.6;
 }
 
 .session-name {
@@ -121,9 +161,37 @@ async function copyId() {
 .card-preview {
   font-size: 0.85em;
   color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  user-select: none;
+}
+
+.card-preview:hover {
+  color: var(--text-primary);
+}
+
+.preview-text {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+}
+
+.preview-text.expanded {
+  white-space: pre-wrap;
+  overflow-y: auto;
+  max-height: 140px;
+  word-break: break-word;
+  text-overflow: unset;
+}
+
+.preview-chevron {
+  font-size: 0.75em;
+  opacity: 0.5;
+  flex-shrink: 0;
+  line-height: 1.6;
 }
 
 .card-stale {

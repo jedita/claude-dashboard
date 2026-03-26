@@ -4,7 +4,7 @@
       <h1>Claude Code Dashboard</h1>
       <ConnectionStatus :status="connectionStatus" />
     </header>
-    <main class="dashboard-main">
+    <main class="dashboard-main" :class="{ 'conn-impaired': connectionStatus !== 'connected' }">
       <div v-if="loading" class="empty-state">Loading sessions…</div>
       <div v-else-if="error" class="empty-state error-state">
         Unable to connect to server: {{ error }}
@@ -94,5 +94,12 @@ body {
 
 .error-state {
   color: #E74C3C;
+}
+
+.dashboard-main.conn-impaired {
+  opacity: 0.4;
+  pointer-events: none;
+  user-select: none;
+  transition: opacity 0.3s;
 }
 </style>
