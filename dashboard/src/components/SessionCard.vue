@@ -65,7 +65,8 @@ const relativeTime = computed(() => {
 const previewExpanded = ref(false)
 
 function openInVSCode() {
-  window.open(`vscode://anthropic.claude-code/open?session=${props.session.session_id}`)
+  const target = props.session.cwd || props.session.session_id
+  window.open(props.session.cwd ? `vscode://file/${target}` : `vscode://anthropic.claude-code/open?session=${target}`)
 }
 
 const copyLabel = ref('Copy ID')
