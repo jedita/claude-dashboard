@@ -139,15 +139,15 @@ Each active session writes to `~/.claude/tab-state/<session_id>.json`:
     "SessionStart": [{ "matcher": "", "hooks": [{ "type": "command",
       "command": "bash ~/.claude/hooks/tab-state.sh init" }] }],
     "UserPromptSubmit": [{ "matcher": "", "hooks": [{ "type": "command",
-      "command": "bash ~/.claude/hooks/tab-state.sh working" }] }],
+      "command": "bash ~/.claude/hooks/tab-state.sh working", "async": true }] }],
     "Stop": [{ "matcher": "", "hooks": [{ "type": "command",
-      "command": "bash ~/.claude/hooks/tab-state.sh stop" }] }],
+      "command": "bash ~/.claude/hooks/tab-state.sh stop", "async": true }] }],
     "StopFailure": [{ "matcher": "", "hooks": [{ "type": "command",
-      "command": "bash ~/.claude/hooks/tab-state.sh error" }] }],
+      "command": "bash ~/.claude/hooks/tab-state.sh error", "async": true }] }],
     "Notification": [{ "matcher": "", "hooks": [{ "type": "command",
-      "command": "bash ~/.claude/hooks/tab-state.sh attention" }] }],
+      "command": "bash ~/.claude/hooks/tab-state.sh attention", "async": true }] }],
     "SessionEnd": [{ "matcher": "", "hooks": [{ "type": "command",
-      "command": "bash ~/.claude/hooks/tab-state.sh cleanup" }] }]
+      "command": "bash ~/.claude/hooks/tab-state.sh cleanup", "async": true }] }]
   }
 }
 ```

@@ -57,22 +57,23 @@ now_iso() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"
 }
 
-# Emit OSC 0 escape sequence for terminal tab title.
-# Walks up the process tree to find a writable TTY because hooks run as
-# subprocesses with no controlling terminal (/dev/tty returns "Device not
-# configured"). The Claude Code node process that launched the hook IS
-# attached to the user's terminal, so we find it by walking ancestors.
-set_tab_title() {
-  local title="$1"
+# Discover the TTY by walking up the process tree.
+# Hooks run as subprocesses with no controlling terminal, so we walk
+# ancestors to find the Claude Code node process that IS attached to
+# the user's terminal.
+# Returns the TTY path on stdout, or exit 1 if not found.
+discover_tty() {
   local pid="${BASHPID:-$$}"
-  local tty_path=""
   local i=0
   while [ $i -lt 10 ]; do
     local raw_tty
     raw_tty=$(ps -p "$pid" -o tty= 2>/dev/null | tr -d ' ')
     if [ -n "$raw_tty" ] && [ "$raw_tty" != "??" ]; then
-      tty_path="/dev/tty${raw_tty}"
-      break
+      local tty_path="/dev/tty${raw_tty}"
+      if [ -w "$tty_path" ]; then
+        echo "$tty_path"
+        return 0
+      fi
     fi
     local ppid
     ppid=$(ps -p "$pid" -o ppid= 2>/dev/null | tr -d ' ')
@@ -80,9 +81,22 @@ set_tab_title() {
     pid="$ppid"
     i=$((i + 1))
   done
+  return 1
+}
+
+# Write OSC 0 to a specific TTY path, or discover the TTY if not provided.
+set_tab_title() {
+  local title="$1"
+  local tty_path="${2:-}"
+  if [ -z "$tty_path" ]; then
+    tty_path="$(discover_tty)" || return 1
+  fi
+  # Re-check writability: the caller may pass an explicit path that has gone stale.
   if [ -n "$tty_path" ] && [ -w "$tty_path" ]; then
     printf '\033]0;%s\033\\' "$title" > "$tty_path"
+    return 0
   fi
+  return 1
 }
 
 # Atomic write: write to tmp then mv
@@ -139,23 +153,37 @@ get_session_name() {
 generate_ai_name() {
   local user_prompt="$1"
   local state_file="$2"
+  local tty_path="${3:-}"
 
   local title
-  title=$(env -u ANTHROPIC_API_KEY CLAUDE_TAB_TITLE_GENERATING=1 claude --tools "" \
-    -p "Tab title 5 words max no punctuation: $user_prompt" \
+  title=$(CLAUDE_TAB_TITLE_GENERATING=1 claude --tools "" \
+    -p "You are a tab-title generator. Given a user prompt, output ONLY a short tab title (3-5 words, no punctuation, no quotes). Do NOT answer the prompt. Do NOT explain. Output just and ONLY a tab title.
+
+User prompt: $user_prompt" \
     < /dev/null 2>/dev/null | tr -d '\n' | sed 's/^ *//; s/ *$//' | head -c 50)
 
   [ -z "$title" ] && return
 
-  # Atomically update state with AI-generated name
+  # Validate: reject if it looks like a conversational AI response
+  local word_count
+  word_count=$(echo "$title" | wc -w | tr -d ' ')
+  [ "$word_count" -gt 7 ] && return
+
+  # Reject common AI response openers (model answered the prompt instead of titling it)
+  if echo "$title" | grep -qiE '^(Sure |Let me |Of course|Unfortunately|Certainly|Yes |No |Thank)'; then
+    return
+  fi
+
+  # Update state file with the validated title
   if [ -f "$state_file" ]; then
     local ai_tmp="${state_file}.aititle.tmp"
     jq --arg name "$title" \
-      '.name = $name | .ai_name_generated = true' \
+      '.name = $name' \
       "$state_file" > "$ai_tmp" 2>/dev/null && mv "$ai_tmp" "$state_file"
   fi
 
-  set_tab_title "🟢 $title"
+  # Update terminal tab title (uses pre-discovered TTY from main process)
+  set_tab_title "🟢 $title" "$tty_path" || true
 }
 
 # Auto-launch the dashboard server if not running (only called on init)
@@ -231,7 +259,7 @@ case "$EVENT" in
       }')
 
     atomic_write "$STATE"
-    set_tab_title "🔄 $SESSION_NAME"
+    set_tab_title "🔄 $SESSION_NAME" || true
 
     # Purge stale sessions from dead processes
     cleanup_stale_sessions
@@ -262,11 +290,15 @@ case "$EVENT" in
         "$STATE_FILE")
 
       atomic_write "$STATE"
-      set_tab_title "🟢 $SESSION_NAME"
+      set_tab_title "🟢 $SESSION_NAME" || true
+
+      # Discover TTY now (while process tree is intact) and pass to background
+      CURRENT_TTY="$(discover_tty 2>/dev/null)" || CURRENT_TTY=""
 
       # Launch AI title generation in background — updates tab when ready (~10s)
       if [ -n "$USER_PROMPT" ]; then
-        generate_ai_name "$USER_PROMPT" "$STATE_FILE" &
+        generate_ai_name "$USER_PROMPT" "$STATE_FILE" "$CURRENT_TTY" &
+        disown
       fi
     else
       STATE=$(jq \
@@ -276,7 +308,7 @@ case "$EVENT" in
         "$STATE_FILE")
 
       atomic_write "$STATE"
-      set_tab_title "🟢 $SESSION_NAME"
+      set_tab_title "🟢 $SESSION_NAME" || true
     fi
     ;;
 
@@ -299,7 +331,7 @@ case "$EVENT" in
       "$STATE_FILE")
 
     atomic_write "$STATE"
-    set_tab_title "✅ $SESSION_NAME"
+    set_tab_title "✅ $SESSION_NAME" || true
     ;;
 
   error)
@@ -318,7 +350,7 @@ case "$EVENT" in
       "$STATE_FILE")
 
     atomic_write "$STATE"
-    set_tab_title "❌ $SESSION_NAME"
+    set_tab_title "❌ $SESSION_NAME" || true
     ;;
 
   attention)
@@ -337,7 +369,7 @@ case "$EVENT" in
       "$STATE_FILE")
 
     atomic_write "$STATE"
-    set_tab_title "⚠️ $SESSION_NAME"
+    set_tab_title "⚠️ $SESSION_NAME" || true
     ;;
 
   cleanup)
