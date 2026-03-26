@@ -8,6 +8,12 @@
 
 set -euo pipefail
 
+# Guard: prevent recursive invocation from nested `claude -p` calls (e.g. generate_ai_name).
+# The child claude process inherits this env var and its hooks exit immediately.
+if [ -n "${CLAUDE_TAB_TITLE_GENERATING:-}" ]; then
+  exit 0
+fi
+
 EVENT="${1:-}"
 STATE_DIR="$HOME/.claude/tab-state"
 DASHBOARD_DIR="$HOME/.claude/dashboard"
@@ -51,10 +57,32 @@ now_iso() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"
 }
 
-# Emit OSC 0 escape sequence for terminal tab title
+# Emit OSC 0 escape sequence for terminal tab title.
+# Walks up the process tree to find a writable TTY because hooks run as
+# subprocesses with no controlling terminal (/dev/tty returns "Device not
+# configured"). The Claude Code node process that launched the hook IS
+# attached to the user's terminal, so we find it by walking ancestors.
 set_tab_title() {
   local title="$1"
-  printf '\033]0;%s\033\\' "$title"
+  local pid="${BASHPID:-$$}"
+  local tty_path=""
+  local i=0
+  while [ $i -lt 10 ]; do
+    local raw_tty
+    raw_tty=$(ps -p "$pid" -o tty= 2>/dev/null | tr -d ' ')
+    if [ -n "$raw_tty" ] && [ "$raw_tty" != "??" ]; then
+      tty_path="/dev/tty${raw_tty}"
+      break
+    fi
+    local ppid
+    ppid=$(ps -p "$pid" -o ppid= 2>/dev/null | tr -d ' ')
+    [ -z "$ppid" ] || [ "$ppid" = "0" ] && break
+    pid="$ppid"
+    i=$((i + 1))
+  done
+  if [ -n "$tty_path" ] && [ -w "$tty_path" ]; then
+    printf '\033]0;%s\033\\' "$title" > "$tty_path"
+  fi
 }
 
 # Atomic write: write to tmp then mv
@@ -83,11 +111,51 @@ strip_markdown() {
     -e '/^$/d' | tr '\n' ' ' | sed 's/  */ /g' | sed 's/^ //' | head -c 80
 }
 
+# Remove state files whose owning process is no longer running.
+# Called during init so stale sessions from crashes or recursive spawns
+# don't accumulate on the dashboard.
+cleanup_stale_sessions() {
+  for f in "$STATE_DIR"/*.json; do
+    [ -f "$f" ] || continue
+    local pid
+    pid=$(jq -r '.pid // 0' "$f" 2>/dev/null)
+    [ "$pid" = "0" ] || [ -z "$pid" ] && { rm -f "$f"; continue; }
+    if ! kill -0 "$pid" 2>/dev/null; then
+      rm -f "$f"
+    fi
+  done
+}
+
 # Get session name from existing state file
 get_session_name() {
   if [ -f "$STATE_FILE" ]; then
     jq -r '.name // empty' "$STATE_FILE" 2>/dev/null
   fi
+}
+
+# Generate an AI tab title from the user's first prompt, then update the
+# state file and terminal title. Intended to be called in a background
+# subshell so it does not block the hook's response.
+generate_ai_name() {
+  local user_prompt="$1"
+  local state_file="$2"
+
+  local title
+  title=$(env -u ANTHROPIC_API_KEY CLAUDE_TAB_TITLE_GENERATING=1 claude --tools "" \
+    -p "Tab title 5 words max no punctuation: $user_prompt" \
+    < /dev/null 2>/dev/null | tr -d '\n' | sed 's/^ *//; s/ *$//' | head -c 50)
+
+  [ -z "$title" ] && return
+
+  # Atomically update state with AI-generated name
+  if [ -f "$state_file" ]; then
+    local ai_tmp="${state_file}.aititle.tmp"
+    jq --arg name "$title" \
+      '.name = $name | .ai_name_generated = true' \
+      "$state_file" > "$ai_tmp" 2>/dev/null && mv "$ai_tmp" "$state_file"
+  fi
+
+  set_tab_title "🟢 $title"
 }
 
 # Auto-launch the dashboard server if not running (only called on init)
@@ -129,7 +197,7 @@ case "$EVENT" in
       CWD="${PWD}"
     fi
 
-    # Session name: env var or fallback
+    # Session name: env var or fallback to dirname-shortid
     if [ -n "${CLAUDE_SESSION_NAME:-}" ]; then
       SESSION_NAME="$CLAUDE_SESSION_NAME"
     else
@@ -158,18 +226,21 @@ case "$EVENT" in
         pid: $pid,
         last_activity: $last_activity,
         last_message_preview: "",
-        created_at: $created_at
+        created_at: $created_at,
+        ai_name_generated: false
       }')
 
     atomic_write "$STATE"
     set_tab_title "🔄 $SESSION_NAME"
 
-    # Auto-launch server if not running (A1.7, A1.8)
+    # Purge stale sessions from dead processes
+    cleanup_stale_sessions
+
+    # Auto-launch server if not running
     auto_launch_server
     ;;
 
   working)
-    # Read existing state, update status and last_activity
     if [ ! -f "$STATE_FILE" ]; then
       echo "tab-state.sh: no state file for session $SESSION_ID" >&2
       exit 1
@@ -177,19 +248,39 @@ case "$EVENT" in
 
     SESSION_NAME="$(get_session_name)"
     NOW="$(now_iso)"
+    AI_GENERATED="$(jq -r '.ai_name_generated // false' "$STATE_FILE" 2>/dev/null)"
 
-    STATE=$(jq \
-      --arg status "working" \
-      --arg last_activity "$NOW" \
-      '.status = $status | .last_activity = $last_activity' \
-      "$STATE_FILE")
+    if [ "$AI_GENERATED" = "false" ]; then
+      # First prompt: mark ai_name_generated=true atomically to prevent
+      # duplicate generation if messages arrive quickly
+      USER_PROMPT="$(echo "$INPUT" | jq -r '.prompt // empty')"
 
-    atomic_write "$STATE"
-    set_tab_title "🟢 $SESSION_NAME"
+      STATE=$(jq \
+        --arg status "working" \
+        --arg last_activity "$NOW" \
+        '.status = $status | .last_activity = $last_activity | .ai_name_generated = true' \
+        "$STATE_FILE")
+
+      atomic_write "$STATE"
+      set_tab_title "🟢 $SESSION_NAME"
+
+      # Launch AI title generation in background — updates tab when ready (~10s)
+      if [ -n "$USER_PROMPT" ]; then
+        generate_ai_name "$USER_PROMPT" "$STATE_FILE" &
+      fi
+    else
+      STATE=$(jq \
+        --arg status "working" \
+        --arg last_activity "$NOW" \
+        '.status = $status | .last_activity = $last_activity' \
+        "$STATE_FILE")
+
+      atomic_write "$STATE"
+      set_tab_title "🟢 $SESSION_NAME"
+    fi
     ;;
 
   stop)
-    # Parse last_assistant_message, update status
     if [ ! -f "$STATE_FILE" ]; then
       echo "tab-state.sh: no state file for session $SESSION_ID" >&2
       exit 1
