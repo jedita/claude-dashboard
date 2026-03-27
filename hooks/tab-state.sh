@@ -162,34 +162,59 @@ generate_ai_name() {
   local user_prompt="$1"
   local state_file="$2"
   local tty_path="${3:-}"
+  local log_file="$SERVER_LOG"
+
+  log_ai_name() {
+    local level="$1"; shift
+    echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] [ai-name] [$level] $*" >> "$log_file" 2>/dev/null || true
+  }
 
   # Disable errexit for the claude call — the CLI may exit non-zero even on
   # success, and pipefail would propagate that, killing this background subshell.
   local title
+  local claude_stderr
+  claude_stderr=$(mktemp 2>/dev/null || echo "/tmp/claude-ai-name-$$")
   title=$(set +e +o pipefail; CLAUDE_TAB_TITLE_GENERATING=1 claude --tools "" \
     -p "You are a tab-title generator. Given a user prompt, output ONLY a short tab title (3-5 words, no punctuation, no quotes). Do NOT answer the prompt. Do NOT explain. Output just and ONLY a tab title.
 
 User prompt: $user_prompt" \
-    < /dev/null 2>/dev/null | tr -d '\n' | sed 's/^ *//; s/ *$//' | head -c 50) || true
+    < /dev/null 2>"$claude_stderr" | tr -d '\n' | sed 's/^ *//; s/ *$//' | head -c 50) || true
 
-  [ -z "$title" ] && return
+  if [ -z "$title" ]; then
+    local stderr_content=""
+    [ -f "$claude_stderr" ] && stderr_content=$(head -c 500 "$claude_stderr" 2>/dev/null)
+    rm -f "$claude_stderr"
+    log_ai_name "ERROR" "Claude CLI returned empty title. stderr: ${stderr_content:-<none>}"
+    return
+  fi
+  rm -f "$claude_stderr"
 
   # Validate: reject if it looks like a conversational AI response
   local word_count
   word_count=$(echo "$title" | wc -w | tr -d ' ')
-  [ "$word_count" -gt 7 ] && return
+  if [ "$word_count" -gt 7 ]; then
+    log_ai_name "WARN" "Rejected title (too many words: $word_count): $title"
+    return
+  fi
 
   # Reject common AI response openers (model answered the prompt instead of titling it)
   if echo "$title" | grep -qiE '^(Sure |Let me |Of course|Unfortunately|Certainly|Yes |No |Thank)'; then
+    log_ai_name "WARN" "Rejected title (conversational opener): $title"
     return
   fi
 
   # Update state file with the validated title
   if [ -f "$state_file" ]; then
     local ai_tmp="${state_file}.aititle.tmp"
-    jq --arg name "$title" \
+    if jq --arg name "$title" \
       '.name = $name' \
-      "$state_file" > "$ai_tmp" 2>/dev/null && mv "$ai_tmp" "$state_file"
+      "$state_file" > "$ai_tmp" 2>/dev/null && mv "$ai_tmp" "$state_file"; then
+      log_ai_name "INFO" "Updated session name to: $title"
+    else
+      log_ai_name "ERROR" "Failed to update state file: $state_file"
+    fi
+  else
+    log_ai_name "ERROR" "State file missing when trying to write title: $state_file"
   fi
 
   # Update terminal tab title (uses pre-discovered TTY from main process)

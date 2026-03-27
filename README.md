@@ -180,6 +180,50 @@ State files are written to `~/.claude/tab-state/<session_id>.json`:
 
 Session names default to `<directory>-<short_id>` (e.g. `ankorstore-a08f`) and can be overridden with the `CLAUDE_SESSION_NAME` environment variable.
 
+## Debugging
+
+### Log file
+
+All server output and hook diagnostics are written to:
+
+```
+~/.claude/dashboard/server.log
+```
+
+### Useful commands
+
+```bash
+# Tail the server log in real-time
+tail -f ~/.claude/dashboard/server.log
+
+# Show only AI title generation events
+grep '\[ai-name\]' ~/.claude/dashboard/server.log
+
+# Show AI title generation failures only
+grep '\[ai-name\] \[ERROR\]' ~/.claude/dashboard/server.log
+
+# Inspect a specific session's state file
+cat ~/.claude/tab-state/<session_id>.json | jq .
+
+# Check if the server is running
+curl -s http://127.0.0.1:3847/api/health | jq .
+
+# Check server PID
+cat ~/.claude/dashboard/server.pid
+
+# List all active session state files
+ls -la ~/.claude/tab-state/
+```
+
+### Common issues
+
+| Symptom | Diagnosis | Fix |
+|---------|-----------|-----|
+| Dashboard shows default name (`project-abcd`) instead of AI title | `grep '\[ai-name\]' ~/.claude/dashboard/server.log` — look for ERROR/WARN entries | Ensure `claude` CLI is on PATH in the hook's environment |
+| No sessions appear on dashboard | Check if server is running: `curl http://127.0.0.1:3847/api/health` | Restart: `node ~/.claude/dashboard/server.js` |
+| Tab titles not updating in VS Code | Verify VS Code settings: `terminal.integrated.tabs.title` must be `${sequence}` | See [VS Code Settings](#vs-code-settings) |
+| Stale sessions persist | Check PID liveness: `jq '.pid' ~/.claude/tab-state/*.json` and compare with `ps` | Dismiss from dashboard or delete state files |
+
 ## Known Limitations
 
 - The `vscode://` deep-link may open a **new** terminal tab rather than focusing the existing one. Use "Copy ID" and `claude --resume <id>` as a workaround.
