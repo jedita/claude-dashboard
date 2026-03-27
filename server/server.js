@@ -51,8 +51,19 @@ fs.writeFileSync(PID_FILE, String(process.pid));
 process.on('exit', () => {
   try { fs.unlinkSync(PID_FILE); } catch (_) {}
 });
-process.on('SIGINT', () => process.exit(0));
-process.on('SIGTERM', () => process.exit(0));
+function gracefulShutdown(signal) {
+  const sessions = readAllSessions();
+  const activeSessions = sessions.filter(s => s.pid && checkPidAlive(s.pid));
+  if (activeSessions.length > 0) {
+    console.log(`Received ${signal} but ${activeSessions.length} active session(s) — ignoring`);
+    return;
+  }
+  console.log(`Received ${signal} with no active sessions — shutting down`);
+  process.exit(0);
+}
+
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
 // --- PID liveness cache ---
 const pidLivenessCache = new Map();

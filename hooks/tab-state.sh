@@ -65,7 +65,7 @@ now_iso() {
 discover_tty() {
   # Fast path: /dev/tty refers to the controlling terminal and works even
   # when ps -o tty= shows "??" (common with piped stdin in hook subprocesses).
-  if [ -w /dev/tty ]; then
+  if [ -w /dev/tty ] && (printf '' > /dev/tty) 2>/dev/null; then
     echo /dev/tty
     return 0
   fi
@@ -101,7 +101,7 @@ set_tab_title() {
   fi
   # Re-check writability: the caller may pass an explicit path that has gone stale.
   if [ -n "$tty_path" ] && [ -w "$tty_path" ]; then
-    printf '\033]0;%s\033\\' "$title" > "$tty_path"
+    (printf '\033]0;%s\033\\' "$title" > "$tty_path") 2>/dev/null
     return 0
   fi
   return 1
@@ -223,8 +223,89 @@ auto_launch_server() {
   # Ensure dashboard directory exists
   mkdir -p "$DASHBOARD_DIR"
 
-  # Start server in background
-  nohup node "$SERVER_SCRIPT" >> "$SERVER_LOG" 2>&1 &
+  # Resolve the actual node binary path.
+  # command -v may return a shell function name (e.g. nvm lazy-loader) instead
+  # of a path, so we check that the result starts with '/'.
+  local node_bin=""
+  local candidate
+  candidate="$(command -v node 2>/dev/null)"
+  if [ -n "$candidate" ] && [ "${candidate:0:1}" = "/" ] && [ -x "$candidate" ]; then
+    node_bin="$candidate"
+  fi
+
+  # Fallback: search well-known paths where node is typically installed
+  if [ -z "$node_bin" ]; then
+    for p in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
+      if [ -x "$p" ]; then
+        node_bin="$p"
+        break
+      fi
+    done
+  fi
+
+  # Last resort: try loading nvm to put node on PATH
+  if [ -z "$node_bin" ]; then
+    export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+    candidate="$(command -v node 2>/dev/null)"
+    if [ -n "$candidate" ] && [ "${candidate:0:1}" = "/" ] && [ -x "$candidate" ]; then
+      node_bin="$candidate"
+    fi
+  fi
+
+  if [ -z "$node_bin" ]; then
+    echo "tab-state.sh: cannot find node binary" >&2
+    return 1
+  fi
+
+  # Start server in a NEW SESSION (detached: true calls setsid() on Unix).
+  # nohup+disown is not enough on macOS — the server stays in the terminal's
+  # process group and gets killed when the tab closes. spawn({detached:true})
+  # creates an independent session that survives terminal closure.
+  "$node_bin" -e "
+    const{spawn}=require('child_process'),fs=require('fs'),
+    log=fs.openSync('${SERVER_LOG}','a');
+    spawn(process.execPath,['${SERVER_SCRIPT}'],
+      {detached:true,stdio:['ignore',log,log]}).unref();
+  "
+
+  # Wait for server to become ready
+  local retries=0
+  while [ $retries -lt 6 ]; do
+    if curl -s --max-time 1 "$HEALTH_URL" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.5
+    retries=$((retries + 1))
+  done
+}
+
+# Open the dashboard in the default browser (only once per server lifetime)
+open_dashboard_browser() {
+  [ -n "${CLAUDE_DASHBOARD_NO_BROWSER:-}" ] && return 0
+
+  local browser_flag="$DASHBOARD_DIR/.browser-opened"
+  local server_pid_val=""
+
+  # Read current server PID
+  if [ -f "$SERVER_PID_FILE" ]; then
+    server_pid_val="$(cat "$SERVER_PID_FILE" 2>/dev/null)"
+  fi
+
+  # Check if we already opened the browser for this server instance
+  if [ -f "$browser_flag" ]; then
+    local stored_pid
+    stored_pid="$(cat "$browser_flag" 2>/dev/null)"
+    if [ "$stored_pid" = "$server_pid_val" ]; then
+      return 0
+    fi
+  fi
+
+  # Only open if server is actually responding
+  if curl -s --max-time 1 "$HEALTH_URL" >/dev/null 2>&1; then
+    echo "$server_pid_val" > "$browser_flag"
+    open "http://127.0.0.1:3847/"
+  fi
 }
 
 case "$EVENT" in
@@ -281,6 +362,9 @@ case "$EVENT" in
 
     # Auto-launch server if not running
     auto_launch_server
+
+    # Open dashboard in browser (once per server instance)
+    open_dashboard_browser
     ;;
 
   working)
