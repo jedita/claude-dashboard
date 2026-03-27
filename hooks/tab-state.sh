@@ -155,6 +155,22 @@ get_session_name() {
   fi
 }
 
+# Resolve the claude CLI binary path once, so background subshells can use it.
+# Same strategy used for node in auto_launch_server().
+CLAUDE_BIN=""
+_candidate="$(command -v claude 2>/dev/null)"
+if [ -n "$_candidate" ] && [ "${_candidate:0:1}" = "/" ] && [ -x "$_candidate" ]; then
+  CLAUDE_BIN="$_candidate"
+fi
+if [ -z "$CLAUDE_BIN" ]; then
+  for _p in "$HOME/.local/bin/claude" /usr/local/bin/claude /opt/homebrew/bin/claude; do
+    if [ -x "$_p" ]; then
+      CLAUDE_BIN="$_p"
+      break
+    fi
+  done
+fi
+
 # Generate an AI tab title from the user's first prompt, then update the
 # state file and terminal title. Intended to be called in a background
 # subshell so it does not block the hook's response.
@@ -169,12 +185,17 @@ generate_ai_name() {
     echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] [ai-name] [$level] $*" >> "$log_file" 2>/dev/null || true
   }
 
+  if [ -z "$CLAUDE_BIN" ]; then
+    log_ai_name "ERROR" "claude CLI not found. Searched: command -v, ~/.local/bin, /usr/local/bin, /opt/homebrew/bin"
+    return
+  fi
+
   # Disable errexit for the claude call — the CLI may exit non-zero even on
   # success, and pipefail would propagate that, killing this background subshell.
   local title
   local claude_stderr
   claude_stderr=$(mktemp 2>/dev/null || echo "/tmp/claude-ai-name-$$")
-  title=$(set +e +o pipefail; CLAUDE_TAB_TITLE_GENERATING=1 claude --tools "" \
+  title=$(set +e +o pipefail; CLAUDE_TAB_TITLE_GENERATING=1 ANTHROPIC_API_KEY="" "$CLAUDE_BIN" --tools "" \
     -p "You are a tab-title generator. Given a user prompt, output ONLY a short tab title (3-5 words, no punctuation, no quotes). Do NOT answer the prompt. Do NOT explain. Output just and ONLY a tab title.
 
 User prompt: $user_prompt" \
@@ -194,6 +215,12 @@ User prompt: $user_prompt" \
   word_count=$(echo "$title" | wc -w | tr -d ' ')
   if [ "$word_count" -gt 7 ]; then
     log_ai_name "WARN" "Rejected title (too many words: $word_count): $title"
+    return
+  fi
+
+  # Reject CLI error messages that leaked to stdout
+  if echo "$title" | grep -qiE '(API key|Not logged in|Please run|rate limit|error|timed out|ECONNREFUSED)'; then
+    log_ai_name "ERROR" "CLI error leaked as title: $title"
     return
   fi
 
