@@ -6,6 +6,7 @@ const error = ref(null)
 
 // Connection status: 'connected', 'reconnecting', 'disconnected'
 const connectionStatus = ref('disconnected')
+const restarting = ref(false)
 
 async function fetchSessions() {
   try {
@@ -65,12 +66,17 @@ function connectSSE() {
       disconnectTimer = null
     }
     connectionStatus.value = 'connected'
+    restarting.value = false
     // Fetch fresh data on (re)connect
     fetchSessions()
   }
 
   eventSource.addEventListener('session-update', () => {
     fetchSessions()
+  })
+
+  eventSource.addEventListener('server-restarting', () => {
+    restarting.value = true
   })
 
   eventSource.onerror = () => {
@@ -112,6 +118,16 @@ export function useSessions() {
     disconnectSSE()
   })
 
+  async function restartServer() {
+    try {
+      restarting.value = true
+      const res = await fetch('/api/restart', { method: 'POST' })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    } catch (err) {
+      console.warn('Restart request failed (server may already be restarting):', err)
+    }
+  }
+
   async function dismissSession(sessionId) {
     try {
       const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
@@ -130,5 +146,7 @@ export function useSessions() {
     connectionStatus,
     fetchSessions,
     dismissSession,
+    restartServer,
+    restarting,
   }
 }

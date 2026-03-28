@@ -16,6 +16,7 @@ const label = computed(() => {
   switch (props.status) {
     case 'connected': return 'Connected'
     case 'reconnecting': return 'Reconnecting…'
+    case 'restarting': return 'Restarting…'
     case 'disconnected': return 'Disconnected'
     default: return props.status
   }
@@ -51,6 +52,11 @@ const label = computed(() => {
 .reconnecting .status-dot {
   background-color: #F39C12;
   box-shadow: 0 0 0 3px rgba(243, 156, 18, 0.15);
+}
+
+.restarting .status-dot {
+  background-color: #3498DB;
+  box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.15);
 }
 
 .disconnected .status-dot {

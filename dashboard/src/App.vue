@@ -2,7 +2,14 @@
   <div class="dashboard">
     <header class="dashboard-header">
       <h1>Claude Code Dashboard</h1>
-      <ConnectionStatus :status="connectionStatus" />
+      <div class="header-actions">
+        <button
+          class="restart-btn"
+          :disabled="restarting || connectionStatus !== 'connected'"
+          @click="handleRestart"
+        >↻ Restart</button>
+        <ConnectionStatus :status="restarting ? 'restarting' : connectionStatus" />
+      </div>
     </header>
     <main class="dashboard-main" :class="{ 'conn-impaired': connectionStatus !== 'connected' }">
       <div v-if="loading" class="empty-state">Loading sessions…</div>
@@ -32,8 +39,19 @@ import { useRelativeTime } from './composables/useRelativeTime.js'
 import ProjectGroup from './components/ProjectGroup.vue'
 import ConnectionStatus from './components/ConnectionStatus.vue'
 
-const { groupedSessions, loading, error, connectionStatus, dismissSession } = useSessions()
+const { sessions, groupedSessions, loading, error, connectionStatus, dismissSession, restartServer, restarting } = useSessions()
 const { tick } = useRelativeTime()
+
+function handleRestart() {
+  const activeSessions = sessions.value.filter(s => s.alive)
+  const count = activeSessions.length
+  const msg = count > 0
+    ? `There are ${count} active session(s). Restarting the server will not affect them, but the dashboard will briefly disconnect. Continue?`
+    : 'Restart the dashboard server? The dashboard will briefly disconnect.'
+  if (window.confirm(msg)) {
+    restartServer()
+  }
+}
 </script>
 
 <style>
@@ -107,6 +125,34 @@ body {
   font-size: 1.5em;
   font-weight: 700;
   letter-spacing: -0.02em;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.restart-btn {
+  font-size: 0.78em;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--surface);
+  border: 1px solid var(--border-color);
+  border-radius: 20px;
+  padding: var(--space-xs) var(--space-sm);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.restart-btn:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--text-secondary);
+}
+
+.restart-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .dashboard-main {

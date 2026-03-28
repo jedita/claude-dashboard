@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # tab-state.sh — Claude Code hook script for session state management
 # Updates per-session state files in ~/.claude/tab-state/<session_id>.json
-# and updates terminal tab titles via OSC 0 escape sequences.
 #
 # Session discovery (creating tab-state files) is handled by the server
 # watching ~/.claude/sessions/. This hook only enriches existing entries.
@@ -183,53 +182,35 @@ now_iso() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"
 }
 
-# Discover the TTY by walking up the process tree.
-# Hooks run as subprocesses with no controlling terminal, so we walk
-# ancestors to find the Claude Code node process that IS attached to
-# the user's terminal.
-# Returns the TTY path on stdout, or exit 1 if not found.
-discover_tty() {
-  # Fast path: /dev/tty refers to the controlling terminal and works even
-  # when ps -o tty= shows "??" (common with piped stdin in hook subprocesses).
-  if [ -w /dev/tty ] && (printf '' > /dev/tty) 2>/dev/null; then
-    echo /dev/tty
-    return 0
-  fi
+# Detect .code-workspace file that contains cwd as a folder root.
+# Searches cwd and its parent directory for *.code-workspace files.
+detect_workspace_file() {
+  local cwd="$1"
+  [ -z "$cwd" ] && return 1
+  local parent
+  parent="$(dirname "$cwd")"
+  local dirs=("$cwd")
+  [ "$parent" != "$cwd" ] && dirs+=("$parent")
 
-  # Fallback: walk the process tree looking for an ancestor with a real TTY.
-  local pid="${BASHPID:-$$}"
-  local i=0
-  while [ $i -lt 10 ]; do
-    local raw_tty
-    raw_tty=$(ps -p "$pid" -o tty= 2>/dev/null | tr -d ' ')
-    if [ -n "$raw_tty" ] && [ "$raw_tty" != "??" ]; then
-      local tty_path="/dev/tty${raw_tty}"
-      if [ -w "$tty_path" ]; then
-        echo "$tty_path"
+  for dir in "${dirs[@]}"; do
+    for ws_file in "$dir"/*.code-workspace; do
+      [ -f "$ws_file" ] || continue
+      local ws_dir
+      ws_dir="$(dirname "$ws_file")"
+      # Check if any folder in the workspace resolves to cwd
+      local match
+      # .code-workspace files use JSONC (trailing commas) — strip before jq
+      match=$(sed 's/,[[:space:]]*\]/]/g; s/,[[:space:]]*}/}/g' "$ws_file" | jq -r --arg cwd "$cwd" --arg wsdir "$ws_dir" '
+        .folders[]?.path // empty |
+        if startswith("/") then . else ($wsdir + "/" + .) end |
+        if . == $cwd then "yes" else empty end
+      ' 2>/dev/null | head -1)
+      if [ "$match" = "yes" ]; then
+        echo "$ws_file"
         return 0
       fi
-    fi
-    local ppid
-    ppid=$(ps -p "$pid" -o ppid= 2>/dev/null | tr -d ' ')
-    [ -z "$ppid" ] || [ "$ppid" = "0" ] && break
-    pid="$ppid"
-    i=$((i + 1))
+    done
   done
-  return 1
-}
-
-# Write OSC 0 to a specific TTY path, or discover the TTY if not provided.
-set_tab_title() {
-  local title="$1"
-  local tty_path="${2:-}"
-  if [ -z "$tty_path" ]; then
-    tty_path="$(discover_tty)" || return 1
-  fi
-  # Re-check writability: the caller may pass an explicit path that has gone stale.
-  if [ -n "$tty_path" ] && [ -w "$tty_path" ]; then
-    (printf '\033]0;%s\033\\' "$title" > "$tty_path") 2>/dev/null
-    return 0
-  fi
   return 1
 }
 
@@ -259,15 +240,7 @@ strip_markdown() {
     -e '/^$/d' | tr '\n' ' ' | sed 's/  */ /g' | sed 's/^ //' | head -c 80
 }
 
-# Get session name from existing state file
-get_session_name() {
-  if [ -f "$STATE_FILE" ]; then
-    jq -r '.name // empty' "$STATE_FILE" 2>/dev/null
-  fi
-}
-
 # Resolve the claude CLI binary path once, so background subshells can use it.
-# Same strategy used for node in auto_launch_server().
 CLAUDE_BIN=""
 _candidate="$(command -v claude 2>/dev/null || true)"
 if [ -n "$_candidate" ] && [ "${_candidate:0:1}" = "/" ] && [ -x "$_candidate" ]; then
@@ -282,13 +255,12 @@ if [ -z "$CLAUDE_BIN" ]; then
   done
 fi
 
-# Generate an AI tab title from the user's first prompt, then update the
-# state file and terminal title. Intended to be called in a background
-# subshell so it does not block the hook's response.
+# Generate an AI session name from the user's first prompt, then update the
+# state file. Intended to be called in a background subshell so it does not
+# block the hook's response.
 generate_ai_name() {
   local user_prompt="$1"
   local state_file="$2"
-  local tty_path="${3:-}"
   local log_file="$SERVER_LOG"
 
   log_ai_name() {
@@ -301,8 +273,6 @@ generate_ai_name() {
     return
   fi
 
-  # Disable errexit for the claude call — the CLI may exit non-zero even on
-  # success, and pipefail would propagate that, killing this background subshell.
   local title
   local claude_stderr
   claude_stderr=$(mktemp 2>/dev/null || echo "/tmp/claude-ai-name-$$")
@@ -354,9 +324,6 @@ User prompt: $user_prompt" \
   else
     log_ai_name "ERROR" "State file missing when trying to write title: $state_file"
   fi
-
-  # Update terminal tab title (uses pre-discovered TTY from main process)
-  set_tab_title "🟢 $title" "$tty_path" || true
 }
 
 case "$EVENT" in
@@ -366,16 +333,14 @@ case "$EVENT" in
       exit 1
     fi
 
-    SESSION_NAME="$(get_session_name)"
-    STORED_TTY="$(jq -r '.tty_path // empty' "$STATE_FILE" 2>/dev/null)"
-
-    # If TTY not yet discovered (server-created state files have empty tty_path),
-    # discover it now and persist for future hooks and generate_ai_name.
-    if [ -z "$STORED_TTY" ]; then
-      STORED_TTY="$(discover_tty 2>/dev/null)" || STORED_TTY=""
-      if [ -n "$STORED_TTY" ]; then
-        jq --arg tty "$STORED_TTY" '.tty_path = $tty' "$STATE_FILE" > "${STATE_FILE}.tty.tmp" \
-          && mv "${STATE_FILE}.tty.tmp" "$STATE_FILE"
+    # If workspace_file not yet detected, detect and persist it
+    STORED_WS="$(jq -r '.workspace_file // empty' "$STATE_FILE" 2>/dev/null)"
+    if [ -z "$STORED_WS" ]; then
+      CWD_VAL="$(jq -r '.cwd // empty' "$STATE_FILE" 2>/dev/null)"
+      if [ -n "$CWD_VAL" ]; then
+        STORED_WS="$(detect_workspace_file "$CWD_VAL")" || STORED_WS=""
+        jq --arg ws "$STORED_WS" '.workspace_file = $ws' "$STATE_FILE" > "${STATE_FILE}.ws.tmp" \
+          && mv "${STATE_FILE}.ws.tmp" "$STATE_FILE"
       fi
     fi
 
@@ -394,11 +359,10 @@ case "$EVENT" in
         "$STATE_FILE")
 
       atomic_write "$STATE"
-      set_tab_title "🟢 $SESSION_NAME" "$STORED_TTY" || true
 
-      # Launch AI title generation in background — updates tab when ready (~10s)
+      # Launch AI name generation in background — updates state file when ready (~10s)
       if [ -n "$USER_PROMPT" ]; then
-        generate_ai_name "$USER_PROMPT" "$STATE_FILE" "$STORED_TTY" &
+        generate_ai_name "$USER_PROMPT" "$STATE_FILE" &
         disown
       fi
     else
@@ -409,7 +373,6 @@ case "$EVENT" in
         "$STATE_FILE")
 
       atomic_write "$STATE"
-      set_tab_title "🟢 $SESSION_NAME" "$STORED_TTY" || true
     fi
     ;;
 
@@ -419,8 +382,6 @@ case "$EVENT" in
       exit 1
     fi
 
-    SESSION_NAME="$(get_session_name)"
-    STORED_TTY="$(jq -r '.tty_path // empty' "$STATE_FILE" 2>/dev/null)"
     NOW="$(now_iso)"
     RAW_MESSAGE="$(echo "$INPUT" | jq -r '.last_assistant_message // empty')"
     PREVIEW="$(strip_markdown "$RAW_MESSAGE")"
@@ -433,7 +394,6 @@ case "$EVENT" in
       "$STATE_FILE")
 
     atomic_write "$STATE"
-    set_tab_title "✅ $SESSION_NAME" "$STORED_TTY" || true
     ;;
 
   error)
@@ -442,8 +402,6 @@ case "$EVENT" in
       exit 1
     fi
 
-    SESSION_NAME="$(get_session_name)"
-    STORED_TTY="$(jq -r '.tty_path // empty' "$STATE_FILE" 2>/dev/null)"
     NOW="$(now_iso)"
 
     STATE=$(jq \
@@ -453,7 +411,6 @@ case "$EVENT" in
       "$STATE_FILE")
 
     atomic_write "$STATE"
-    set_tab_title "❌ $SESSION_NAME" "$STORED_TTY" || true
     ;;
 
   attention)
@@ -462,8 +419,6 @@ case "$EVENT" in
       exit 1
     fi
 
-    SESSION_NAME="$(get_session_name)"
-    STORED_TTY="$(jq -r '.tty_path // empty' "$STATE_FILE" 2>/dev/null)"
     NOW="$(now_iso)"
 
     STATE=$(jq \
@@ -473,15 +428,9 @@ case "$EVENT" in
       "$STATE_FILE")
 
     atomic_write "$STATE"
-    set_tab_title "⚠️ $SESSION_NAME" "$STORED_TTY" || true
     ;;
 
   cleanup)
-    # Reset terminal tab title before removing state
-    if [ -f "$STATE_FILE" ]; then
-      STORED_TTY="$(jq -r '.tty_path // empty' "$STATE_FILE" 2>/dev/null)"
-      set_tab_title "" "$STORED_TTY" || true
-    fi
     # Remove state file
     rm -f "$STATE_FILE"
     ;;

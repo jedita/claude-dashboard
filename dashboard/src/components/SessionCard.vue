@@ -9,6 +9,7 @@
       <span class="session-name" :title="session.name">{{ truncatedName }}</span>
     </div>
     <div class="card-time">{{ relativeTime }}</div>
+    <a v-if="session.cwd" class="card-path" :title="pathTarget" @click.prevent="openInVSCode">{{ pathLabel }}</a>
     <div class="card-preview" v-if="session.last_message_preview" @click="previewExpanded = !previewExpanded">
       <span class="preview-text" :class="{ expanded: previewExpanded }">{{ session.last_message_preview }}</span>
       <span class="preview-chevron">{{ previewExpanded ? '▴' : '▾' }}</span>
@@ -65,11 +66,23 @@ const relativeTime = computed(() => {
   return formatRelativeTime(props.session.last_activity)
 })
 
+const pathTarget = computed(() => {
+  return props.session.workspace_file || props.session.cwd || ''
+})
+
+const pathLabel = computed(() => {
+  const target = pathTarget.value
+  if (!target) return ''
+  // Show filename for workspace files, folder name for directories
+  const parts = target.replace(/\/+$/, '').split('/')
+  return parts[parts.length - 1] || target
+})
+
 const previewExpanded = ref(false)
 
 function openInVSCode() {
-  const target = props.session.cwd || props.session.session_id
-  window.open(props.session.cwd ? `vscode://file/${target}` : `vscode://anthropic.claude-code/open?session=${target}`)
+  const target = pathTarget.value
+  if (target) window.open(`vscode://file/${target}`)
 }
 
 const copyLabel = ref('Copy ID')
@@ -166,6 +179,25 @@ async function copyId() {
 .card-time {
   font-size: 0.78em;
   color: var(--text-secondary);
+}
+
+/* -- Path link -- */
+.card-path {
+  font-size: 0.78em;
+  color: var(--text-secondary);
+  cursor: pointer;
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.7;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.card-path:hover {
+  opacity: 1;
+  color: var(--text-primary);
+  text-decoration: underline;
 }
 
 /* -- Preview -- */
