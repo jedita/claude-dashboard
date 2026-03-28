@@ -5,7 +5,7 @@ const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { exec, spawn } = require("child_process");
+const { spawn } = require("child_process");
 
 // --- Configuration ---
 const PORT = parseInt(process.env.PORT, 10) || 3847;
@@ -142,39 +142,6 @@ function scheduleSSEBroadcast() {
   }, SSE_DEBOUNCE_MS);
 }
 
-// --- Workspace file detection ---
-// Searches cwd and its parent for .code-workspace files whose folders[] array
-// contains cwd. Returns the workspace file path, or '' if not found.
-function detectWorkspaceFile(cwd) {
-  if (!cwd) return "";
-  const dirsToSearch = [...new Set([cwd, path.dirname(cwd)])];
-  for (const dir of dirsToSearch) {
-    let files;
-    try {
-      files = fs.readdirSync(dir);
-    } catch {
-      continue;
-    }
-    for (const file of files) {
-      if (!file.endsWith(".code-workspace")) continue;
-      const wsPath = path.join(dir, file);
-      try {
-        // .code-workspace files use JSONC (trailing commas, comments) — strip before parsing
-        const raw = fs.readFileSync(wsPath, "utf8");
-        const content = JSON.parse(raw.replace(/,\s*([\]}])/g, "$1"));
-        for (const folder of content.folders || []) {
-          if (folder.path && path.resolve(dir, folder.path) === cwd) {
-            return wsPath;
-          }
-        }
-      } catch {
-        /* skip unparseable */
-      }
-    }
-  }
-  return "";
-}
-
 // --- Native session discovery ---
 // Claude Code writes session files to ~/.claude/sessions/<pid>.json for every
 // session, regardless of how Claude was launched. We watch this directory and
@@ -227,7 +194,6 @@ function syncNativeSessions() {
         last_message_preview: "",
         created_at: createdAt,
         ai_name_generated: false,
-        workspace_file: detectWorkspaceFile(cwd),
       };
 
       fs.writeFileSync(stateFile, JSON.stringify(state, null, 2));
@@ -306,41 +272,6 @@ app.delete("/api/sessions/:id", (req, res) => {
       res.status(500).json({ error: err.message });
     }
   }
-});
-
-// Open in VS Code — prefers workspace file for correct window matching
-app.post("/api/open-vscode", express.json(), (req, res) => {
-  const { cwd, workspace_file } = req.body;
-  let target;
-  if (
-    workspace_file &&
-    typeof workspace_file === "string" &&
-    fs.existsSync(workspace_file)
-  ) {
-    target = workspace_file;
-  } else if (cwd && typeof cwd === "string" && fs.existsSync(cwd)) {
-    target = cwd;
-  } else {
-    return res
-      .status(400)
-      .json({ error: "Missing or invalid cwd/workspace_file" });
-  }
-  const escaped = target.replace(/'/g, "'\\''");
-
-  // Use macOS `open` for both workspace files and directories.
-  // Workspace files: `open` activates the existing VS Code window.
-  // Directories: `open -a` opens/focuses the folder in VS Code.
-  const cmd = target.endsWith(".code-workspace")
-    ? `/usr/bin/open '${escaped}'`
-    : `/usr/bin/open -a "Visual Studio Code" '${escaped}'`;
-
-  exec(cmd, (err) => {
-    if (err) {
-      console.warn("Failed to open VS Code:", cmd, err.message);
-      return res.status(500).json({ error: "Failed to open VS Code" });
-    }
-    res.json({ ok: true });
-  });
 });
 
 // Restart server — spawns a new instance and exits

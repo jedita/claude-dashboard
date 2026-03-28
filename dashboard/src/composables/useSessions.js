@@ -3,10 +3,22 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 const sessions = ref([])
 const loading = ref(true)
 const error = ref(null)
+const workspaceOverrides = ref({})
 
 // Connection status: 'connected', 'reconnecting', 'disconnected'
 const connectionStatus = ref('disconnected')
 const restarting = ref(false)
+
+async function fetchConfig() {
+  try {
+    const res = await fetch('/config.json')
+    if (!res.ok) return
+    const config = await res.json()
+    workspaceOverrides.value = config.workspaceOverrides || {}
+  } catch {
+    // config.json is optional
+  }
+}
 
 async function fetchSessions() {
   try {
@@ -110,6 +122,7 @@ function disconnectSSE() {
 
 export function useSessions() {
   onMounted(() => {
+    fetchConfig()
     fetchSessions()
     connectSSE()
   })
@@ -144,6 +157,7 @@ export function useSessions() {
     loading,
     error,
     connectionStatus,
+    workspaceOverrides,
     fetchSessions,
     dismissSession,
     restartServer,

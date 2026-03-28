@@ -182,38 +182,6 @@ now_iso() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"
 }
 
-# Detect .code-workspace file that contains cwd as a folder root.
-# Searches cwd and its parent directory for *.code-workspace files.
-detect_workspace_file() {
-  local cwd="$1"
-  [ -z "$cwd" ] && return 1
-  local parent
-  parent="$(dirname "$cwd")"
-  local dirs=("$cwd")
-  [ "$parent" != "$cwd" ] && dirs+=("$parent")
-
-  for dir in "${dirs[@]}"; do
-    for ws_file in "$dir"/*.code-workspace; do
-      [ -f "$ws_file" ] || continue
-      local ws_dir
-      ws_dir="$(dirname "$ws_file")"
-      # Check if any folder in the workspace resolves to cwd
-      local match
-      # .code-workspace files use JSONC (trailing commas) — strip before jq
-      match=$(sed 's/,[[:space:]]*\]/]/g; s/,[[:space:]]*}/}/g' "$ws_file" | jq -r --arg cwd "$cwd" --arg wsdir "$ws_dir" '
-        .folders[]?.path // empty |
-        if startswith("/") then . else ($wsdir + "/" + .) end |
-        if . == $cwd then "yes" else empty end
-      ' 2>/dev/null | head -1)
-      if [ "$match" = "yes" ]; then
-        echo "$ws_file"
-        return 0
-      fi
-    done
-  done
-  return 1
-}
-
 # Atomic write: write to tmp then mv
 atomic_write() {
   local content="$1"
@@ -331,17 +299,6 @@ case "$EVENT" in
     if [ ! -f "$STATE_FILE" ]; then
       echo "tab-state.sh: no state file for session $SESSION_ID" >&2
       exit 1
-    fi
-
-    # If workspace_file not yet detected, detect and persist it
-    STORED_WS="$(jq -r '.workspace_file // empty' "$STATE_FILE" 2>/dev/null)"
-    if [ -z "$STORED_WS" ]; then
-      CWD_VAL="$(jq -r '.cwd // empty' "$STATE_FILE" 2>/dev/null)"
-      if [ -n "$CWD_VAL" ]; then
-        STORED_WS="$(detect_workspace_file "$CWD_VAL")" || STORED_WS=""
-        jq --arg ws "$STORED_WS" '.workspace_file = $ws' "$STATE_FILE" > "${STATE_FILE}.ws.tmp" \
-          && mv "${STATE_FILE}.ws.tmp" "$STATE_FILE"
-      fi
     fi
 
     NOW="$(now_iso)"

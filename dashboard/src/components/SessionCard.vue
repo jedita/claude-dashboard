@@ -30,6 +30,7 @@ import { formatRelativeTime } from '../composables/useRelativeTime.js'
 const props = defineProps({
   session: { type: Object, required: true },
   tick: { type: Number, default: 0 },
+  workspaceOverrides: { type: Object, default: () => ({}) },
 })
 
 const emit = defineEmits(['dismiss'])
@@ -67,7 +68,8 @@ const relativeTime = computed(() => {
 })
 
 const pathTarget = computed(() => {
-  return props.session.workspace_file || props.session.cwd || ''
+  const cwd = props.session.cwd || ''
+  return props.workspaceOverrides[cwd] || cwd
 })
 
 const pathLabel = computed(() => {

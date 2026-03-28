@@ -2,3 +2,4 @@
 .vscode
 dashboard/.vscode
 dashboard/node_modules
+dashboard/public/config.json

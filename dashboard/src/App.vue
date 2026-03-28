@@ -26,6 +26,7 @@
           :project="group.project"
           :sessions="group.sessions"
           :tick="tick"
+          :workspace-overrides="workspaceOverrides"
           @dismiss="dismissSession"
         />
       </template>
@@ -39,7 +40,7 @@ import { useRelativeTime } from './composables/useRelativeTime.js'
 import ProjectGroup from './components/ProjectGroup.vue'
 import ConnectionStatus from './components/ConnectionStatus.vue'
 
-const { sessions, groupedSessions, loading, error, connectionStatus, dismissSession, restartServer, restarting } = useSessions()
+const { sessions, groupedSessions, loading, error, connectionStatus, workspaceOverrides, dismissSession, restartServer, restarting } = useSessions()
 const { tick } = useRelativeTime()
 
 function handleRestart() {

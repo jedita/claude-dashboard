@@ -7,6 +7,7 @@
         :key="session.session_id"
         :session="session"
         :tick="tick"
+        :workspace-overrides="workspaceOverrides"
         @dismiss="id => emit('dismiss', id)"
       />
     </div>
@@ -20,6 +21,7 @@ defineProps({
   project: { type: String, required: true },
   sessions: { type: Array, required: true },
   tick: { type: Number, default: 0 },
+  workspaceOverrides: { type: Object, default: () => ({}) },
 })
 
 const emit = defineEmits(['dismiss'])
