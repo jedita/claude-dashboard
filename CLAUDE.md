@@ -8,11 +8,11 @@ A browser-based dashboard for monitoring active Claude Code sessions running in 
 
 ## Architecture
 
-Three components work together:
+Three components work together using a **hybrid session discovery** model:
 
-1. **Hook script** (`hooks/tab-state.sh`) — Bash script triggered by Claude Code lifecycle events (SessionStart, UserPromptSubmit, Stop, etc.). Writes session state as JSON files to `~/.claude/tab-state/<session_id>.json`. Also sets terminal tab titles via OSC 0 escape sequences and auto-launches the server.
+1. **Backend server** (`server/server.js`) — Express.js server on port 3847 (localhost only). **Primary session discovery**: watches `~/.claude/sessions/` (Claude Code's native session registry) and creates tab-state entries for any new sessions. Also watches `~/.claude/tab-state/` for hook-driven updates. Serves a REST API (`/api/sessions`, `/api/health`) and broadcasts changes over SSE (`/api/events`). Checks PID liveness every 60 seconds.
 
-2. **Backend server** (`server/server.js`) — Express.js server on port 3847 (localhost only). Watches the state directory with `fs.watch()`, serves a REST API (`/api/sessions`, `/api/health`), and broadcasts changes over SSE (`/api/events`). Checks PID liveness every 60 seconds.
+2. **Hook script** (`hooks/tab-state.sh`) — Bash script triggered by Claude Code lifecycle events. The `SessionStart` hook only auto-launches the server and opens the browser (no `jq` needed). Enrichment hooks (`UserPromptSubmit`, `Stop`, `StopFailure`, `Notification`, `SessionEnd`) update existing tab-state files with status changes, AI-generated names, message previews, and terminal tab titles via OSC 0 escape sequences. These hooks require `jq` but are optional — if they fail, sessions still appear via native discovery.
 
 3. **Frontend dashboard** (`dashboard/`) — Vue 3 + Vite SPA. Uses Composition API with composables (`useSessions.js`, `useRelativeTime.js`). Sessions are grouped by project directory. Supports light/dark mode via CSS variables and `prefers-color-scheme`.
 
@@ -37,7 +37,11 @@ Run the server and dashboard dev server in separate terminals. The Vite config p
 
 ### Testing hooks manually
 ```bash
-echo '{"session_id":"test-123","cwd":"/tmp/test"}' | bash hooks/tab-state.sh init
+# Test init (server launch only, no jq needed):
+echo '{}' | bash hooks/tab-state.sh init
+
+# Test enrichment hooks (requires jq):
+echo '{"session_id":"test-123","prompt":"hello"}' | bash hooks/tab-state.sh working
 ```
 
 ### Full installation
@@ -47,9 +51,10 @@ bash install.sh  # Installs hooks, builds dashboard, copies to ~/.claude/
 
 ## Key Technical Details
 
+- **Session discovery** uses Claude's native `~/.claude/sessions/<pid>.json` files (always written by Claude Code). The server creates tab-state entries from these. Enrichment hooks update tab-state with richer data when available.
 - **State files** are JSON at `~/.claude/tab-state/<session_id>.json` with fields: `version`, `session_id`, `name`, `status`, `cwd`, `pid`, `last_activity`, `last_message_preview`, `created_at`. The `alive` field is computed by the server.
 - **Session statuses**: `starting`, `working`, `done`, `error`, `attention`
-- **Hook script requires** `jq` and `curl` as external CLI dependencies.
+- **Hook dependencies**: The `init` hook needs only `curl` and `node`. Enrichment hooks (`working`, `stop`, `error`, `attention`, `cleanup`) require `jq`. If `jq` is unavailable, sessions still appear via native discovery but without enriched status/names.
 - **No test framework** is configured — test scenarios are documented in `test-scenarios.md` for manual verification.
 - **No linter** is configured.
 - **No root `package.json`** — dependencies must be installed separately in `dashboard/` and `server/`.

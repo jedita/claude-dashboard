@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # tab-state.sh — Claude Code hook script for session state management
-# Writes per-session state files to ~/.claude/tab-state/<session_id>.json
+# Updates per-session state files in ~/.claude/tab-state/<session_id>.json
 # and updates terminal tab titles via OSC 0 escape sequences.
+#
+# Session discovery (creating tab-state files) is handled by the server
+# watching ~/.claude/sessions/. This hook only enriches existing entries.
+#
+# The init event only launches the server and opens the browser — it does
+# NOT require jq, making it robust in minimal shell environments (e.g.
+# VS Code terminal profile shortcuts).
 #
 # Usage: echo '<json>' | bash tab-state.sh <event>
 # Events: init, working, stop, error, attention, cleanup
@@ -25,7 +32,126 @@ HEALTH_URL="http://127.0.0.1:3847/api/health"
 # Ensure state directory exists
 mkdir -p "$STATE_DIR"
 
-# Check for jq
+# --- Handle init early (no jq needed) ---
+# Init only launches the server and opens the browser. Session state file
+# creation is handled by the server via native session discovery.
+if [ "$EVENT" = "init" ]; then
+  # Consume stdin (Claude sends JSON but init doesn't need it)
+  cat > /dev/null
+
+  # Auto-launch server if not running
+  auto_launch_server() {
+    # Quick check: is server already responding?
+    if curl -s --max-time 1 "$HEALTH_URL" >/dev/null 2>&1; then
+      return 0
+    fi
+
+    # Check PID file — if a live process exists, server may still be starting
+    if [ -f "$SERVER_PID_FILE" ]; then
+      local existing_pid
+      existing_pid="$(cat "$SERVER_PID_FILE" 2>/dev/null)"
+      if [ -n "$existing_pid" ] && kill -0 "$existing_pid" 2>/dev/null; then
+        return 0
+      fi
+      # PID file points to dead process — remove it
+      rm -f "$SERVER_PID_FILE"
+    fi
+
+    # Ensure server script exists
+    if [ ! -f "$SERVER_SCRIPT" ]; then
+      echo "tab-state.sh: server script not found at $SERVER_SCRIPT" >&2
+      return 1
+    fi
+
+    # Ensure dashboard directory exists
+    mkdir -p "$DASHBOARD_DIR"
+
+    # Resolve the actual node binary path.
+    local node_bin=""
+    local candidate
+    candidate="$(command -v node 2>/dev/null || true)"
+    if [ -n "$candidate" ] && [ "${candidate:0:1}" = "/" ] && [ -x "$candidate" ]; then
+      node_bin="$candidate"
+    fi
+
+    # Fallback: search well-known paths where node is typically installed
+    if [ -z "$node_bin" ]; then
+      for p in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
+        if [ -x "$p" ]; then
+          node_bin="$p"
+          break
+        fi
+      done
+    fi
+
+    # Last resort: try loading nvm to put node on PATH
+    if [ -z "$node_bin" ]; then
+      export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+      [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+      candidate="$(command -v node 2>/dev/null || true)"
+      if [ -n "$candidate" ] && [ "${candidate:0:1}" = "/" ] && [ -x "$candidate" ]; then
+        node_bin="$candidate"
+      fi
+    fi
+
+    if [ -z "$node_bin" ]; then
+      echo "tab-state.sh: cannot find node binary" >&2
+      return 1
+    fi
+
+    # Start server in a NEW SESSION (detached: true calls setsid() on Unix).
+    "$node_bin" -e "
+      const{spawn}=require('child_process'),fs=require('fs'),
+      log=fs.openSync('${SERVER_LOG}','a');
+      spawn(process.execPath,['${SERVER_SCRIPT}'],
+        {detached:true,stdio:['ignore',log,log]}).unref();
+    "
+
+    # Wait for server to become ready
+    local retries=0
+    while [ $retries -lt 6 ]; do
+      if curl -s --max-time 1 "$HEALTH_URL" >/dev/null 2>&1; then
+        return 0
+      fi
+      sleep 0.5
+      retries=$((retries + 1))
+    done
+  }
+
+  # Open the dashboard in the default browser (only once per server lifetime)
+  open_dashboard_browser() {
+    [ -n "${CLAUDE_DASHBOARD_NO_BROWSER:-}" ] && return 0
+
+    local browser_flag="$DASHBOARD_DIR/.browser-opened"
+    local server_pid_val=""
+
+    # Read current server PID
+    if [ -f "$SERVER_PID_FILE" ]; then
+      server_pid_val="$(cat "$SERVER_PID_FILE" 2>/dev/null)"
+    fi
+
+    # Check if we already opened the browser for this server instance
+    if [ -f "$browser_flag" ]; then
+      local stored_pid
+      stored_pid="$(cat "$browser_flag" 2>/dev/null)"
+      if [ "$stored_pid" = "$server_pid_val" ]; then
+        return 0
+      fi
+    fi
+
+    # Only open if server is actually responding
+    if curl -s --max-time 1 "$HEALTH_URL" >/dev/null 2>&1; then
+      echo "$server_pid_val" > "$browser_flag"
+      open "http://127.0.0.1:3847/"
+    fi
+  }
+
+  auto_launch_server
+  open_dashboard_browser
+  exit 0
+fi
+
+# --- All other events require jq ---
 if ! command -v jq &>/dev/null; then
   echo "tab-state.sh: jq is required but not installed" >&2
   exit 1
@@ -133,21 +259,6 @@ strip_markdown() {
     -e '/^$/d' | tr '\n' ' ' | sed 's/  */ /g' | sed 's/^ //' | head -c 80
 }
 
-# Remove state files whose owning process is no longer running.
-# Called during init so stale sessions from crashes or recursive spawns
-# don't accumulate on the dashboard.
-cleanup_stale_sessions() {
-  for f in "$STATE_DIR"/*.json; do
-    [ -f "$f" ] || continue
-    local pid
-    pid=$(jq -r '.pid // 0' "$f" 2>/dev/null)
-    [ "$pid" = "0" ] || [ -z "$pid" ] && { rm -f "$f"; continue; }
-    if ! kill -0 "$pid" 2>/dev/null; then
-      rm -f "$f"
-    fi
-  done
-}
-
 # Get session name from existing state file
 get_session_name() {
   if [ -f "$STATE_FILE" ]; then
@@ -158,7 +269,7 @@ get_session_name() {
 # Resolve the claude CLI binary path once, so background subshells can use it.
 # Same strategy used for node in auto_launch_server().
 CLAUDE_BIN=""
-_candidate="$(command -v claude 2>/dev/null)"
+_candidate="$(command -v claude 2>/dev/null || true)"
 if [ -n "$_candidate" ] && [ "${_candidate:0:1}" = "/" ] && [ -x "$_candidate" ]; then
   CLAUDE_BIN="$_candidate"
 fi
@@ -248,177 +359,7 @@ User prompt: $user_prompt" \
   set_tab_title "🟢 $title" "$tty_path" || true
 }
 
-# Auto-launch the dashboard server if not running (only called on init)
-auto_launch_server() {
-  # Quick check: is server already responding?
-  if curl -s --max-time 1 "$HEALTH_URL" >/dev/null 2>&1; then
-    return 0
-  fi
-
-  # Check PID file — if a live process exists, server may still be starting
-  if [ -f "$SERVER_PID_FILE" ]; then
-    local existing_pid
-    existing_pid="$(cat "$SERVER_PID_FILE" 2>/dev/null)"
-    if [ -n "$existing_pid" ] && kill -0 "$existing_pid" 2>/dev/null; then
-      return 0
-    fi
-    # PID file points to dead process — remove it
-    rm -f "$SERVER_PID_FILE"
-  fi
-
-  # Ensure server script exists
-  if [ ! -f "$SERVER_SCRIPT" ]; then
-    echo "tab-state.sh: server script not found at $SERVER_SCRIPT" >&2
-    return 1
-  fi
-
-  # Ensure dashboard directory exists
-  mkdir -p "$DASHBOARD_DIR"
-
-  # Resolve the actual node binary path.
-  # command -v may return a shell function name (e.g. nvm lazy-loader) instead
-  # of a path, so we check that the result starts with '/'.
-  local node_bin=""
-  local candidate
-  candidate="$(command -v node 2>/dev/null)"
-  if [ -n "$candidate" ] && [ "${candidate:0:1}" = "/" ] && [ -x "$candidate" ]; then
-    node_bin="$candidate"
-  fi
-
-  # Fallback: search well-known paths where node is typically installed
-  if [ -z "$node_bin" ]; then
-    for p in /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
-      if [ -x "$p" ]; then
-        node_bin="$p"
-        break
-      fi
-    done
-  fi
-
-  # Last resort: try loading nvm to put node on PATH
-  if [ -z "$node_bin" ]; then
-    export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
-    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-    candidate="$(command -v node 2>/dev/null)"
-    if [ -n "$candidate" ] && [ "${candidate:0:1}" = "/" ] && [ -x "$candidate" ]; then
-      node_bin="$candidate"
-    fi
-  fi
-
-  if [ -z "$node_bin" ]; then
-    echo "tab-state.sh: cannot find node binary" >&2
-    return 1
-  fi
-
-  # Start server in a NEW SESSION (detached: true calls setsid() on Unix).
-  # nohup+disown is not enough on macOS — the server stays in the terminal's
-  # process group and gets killed when the tab closes. spawn({detached:true})
-  # creates an independent session that survives terminal closure.
-  "$node_bin" -e "
-    const{spawn}=require('child_process'),fs=require('fs'),
-    log=fs.openSync('${SERVER_LOG}','a');
-    spawn(process.execPath,['${SERVER_SCRIPT}'],
-      {detached:true,stdio:['ignore',log,log]}).unref();
-  "
-
-  # Wait for server to become ready
-  local retries=0
-  while [ $retries -lt 6 ]; do
-    if curl -s --max-time 1 "$HEALTH_URL" >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 0.5
-    retries=$((retries + 1))
-  done
-}
-
-# Open the dashboard in the default browser (only once per server lifetime)
-open_dashboard_browser() {
-  [ -n "${CLAUDE_DASHBOARD_NO_BROWSER:-}" ] && return 0
-
-  local browser_flag="$DASHBOARD_DIR/.browser-opened"
-  local server_pid_val=""
-
-  # Read current server PID
-  if [ -f "$SERVER_PID_FILE" ]; then
-    server_pid_val="$(cat "$SERVER_PID_FILE" 2>/dev/null)"
-  fi
-
-  # Check if we already opened the browser for this server instance
-  if [ -f "$browser_flag" ]; then
-    local stored_pid
-    stored_pid="$(cat "$browser_flag" 2>/dev/null)"
-    if [ "$stored_pid" = "$server_pid_val" ]; then
-      return 0
-    fi
-  fi
-
-  # Only open if server is actually responding
-  if curl -s --max-time 1 "$HEALTH_URL" >/dev/null 2>&1; then
-    echo "$server_pid_val" > "$browser_flag"
-    open "http://127.0.0.1:3847/"
-  fi
-}
-
 case "$EVENT" in
-  init)
-    # Parse fields from stdin
-    CWD="$(echo "$INPUT" | jq -r '.cwd // empty')"
-    if [ -z "$CWD" ]; then
-      CWD="${PWD}"
-    fi
-
-    # Session name: env var or fallback to dirname-shortid
-    if [ -n "${CLAUDE_SESSION_NAME:-}" ]; then
-      SESSION_NAME="$CLAUDE_SESSION_NAME"
-    else
-      DIR_NAME="$(basename "$CWD")"
-      SHORT_ID="${SESSION_ID:0:4}"
-      SESSION_NAME="${DIR_NAME}-${SHORT_ID}"
-    fi
-
-    NOW="$(now_iso)"
-    PID="${PPID:-0}"
-
-    # Discover TTY early (process tree is intact at init) and cache for later events
-    CURRENT_TTY="$(discover_tty 2>/dev/null)" || CURRENT_TTY=""
-
-    STATE=$(jq -n \
-      --arg sid "$SESSION_ID" \
-      --arg name "$SESSION_NAME" \
-      --arg status "starting" \
-      --arg cwd "$CWD" \
-      --argjson pid "$PID" \
-      --arg last_activity "$NOW" \
-      --arg created_at "$NOW" \
-      --arg tty "$CURRENT_TTY" \
-      '{
-        version: 1,
-        session_id: $sid,
-        name: $name,
-        status: $status,
-        cwd: $cwd,
-        pid: $pid,
-        last_activity: $last_activity,
-        last_message_preview: "",
-        created_at: $created_at,
-        ai_name_generated: false,
-        tty_path: $tty
-      }')
-
-    atomic_write "$STATE"
-    set_tab_title "🔄 $SESSION_NAME" "$CURRENT_TTY" || true
-
-    # Purge stale sessions from dead processes
-    cleanup_stale_sessions
-
-    # Auto-launch server if not running
-    auto_launch_server
-
-    # Open dashboard in browser (once per server instance)
-    open_dashboard_browser
-    ;;
-
   working)
     if [ ! -f "$STATE_FILE" ]; then
       echo "tab-state.sh: no state file for session $SESSION_ID" >&2
@@ -427,6 +368,17 @@ case "$EVENT" in
 
     SESSION_NAME="$(get_session_name)"
     STORED_TTY="$(jq -r '.tty_path // empty' "$STATE_FILE" 2>/dev/null)"
+
+    # If TTY not yet discovered (server-created state files have empty tty_path),
+    # discover it now and persist for future hooks and generate_ai_name.
+    if [ -z "$STORED_TTY" ]; then
+      STORED_TTY="$(discover_tty 2>/dev/null)" || STORED_TTY=""
+      if [ -n "$STORED_TTY" ]; then
+        jq --arg tty "$STORED_TTY" '.tty_path = $tty' "$STATE_FILE" > "${STATE_FILE}.tty.tmp" \
+          && mv "${STATE_FILE}.tty.tmp" "$STATE_FILE"
+      fi
+    fi
+
     NOW="$(now_iso)"
     AI_GENERATED="$(jq -r '.ai_name_generated // false' "$STATE_FILE" 2>/dev/null)"
 

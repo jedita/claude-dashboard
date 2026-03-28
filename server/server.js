@@ -10,6 +10,7 @@ const os = require('os');
 const PORT = parseInt(process.env.PORT, 10) || 3847;
 const BIND_ADDRESS = '127.0.0.1';
 const STATE_DIR = path.join(os.homedir(), '.claude', 'tab-state');
+const SESSIONS_DIR = path.join(os.homedir(), '.claude', 'sessions');
 const DASHBOARD_DIR = path.join(os.homedir(), '.claude', 'dashboard');
 const PID_FILE = path.join(DASHBOARD_DIR, 'server.pid');
 const SSE_DEBOUNCE_MS = 300;
@@ -131,6 +132,114 @@ function getSessionsWithLiveness() {
   });
 }
 
+// --- SSE broadcast (moved up so native session sync can use it) ---
+let debounceTimer = null;
+
+function scheduleSSEBroadcast() {
+  if (debounceTimer) {
+    clearTimeout(debounceTimer);
+  }
+  debounceTimer = setTimeout(() => {
+    debounceTimer = null;
+    broadcastSSE('session-update', { type: 'reload' });
+  }, SSE_DEBOUNCE_MS);
+}
+
+// --- Native session discovery ---
+// Claude Code writes session files to ~/.claude/sessions/<pid>.json for every
+// session, regardless of how Claude was launched. We watch this directory and
+// create tab-state entries for any sessions that don't already have one. This
+// ensures sessions started via VS Code shortcuts (where hooks may fail) still
+// appear on the dashboard. Enrichment hooks (working, stop, error, attention)
+// can then update the tab-state file with richer data when they do fire.
+
+function syncNativeSessions() {
+  let nativeFiles;
+  try {
+    nativeFiles = fs.readdirSync(SESSIONS_DIR);
+  } catch (err) {
+    return; // sessions dir may not exist
+  }
+
+  let created = 0;
+  for (const file of nativeFiles) {
+    if (!file.endsWith('.json')) continue;
+    const filePath = path.join(SESSIONS_DIR, file);
+    try {
+      const content = fs.readFileSync(filePath, 'utf8');
+      const native = JSON.parse(content);
+      if (!native.sessionId || !native.pid) continue;
+
+      // Check if tab-state file already exists for this session
+      const safeId = native.sessionId.replace(/[^a-zA-Z0-9_-]/g, '_');
+      const stateFile = path.join(STATE_DIR, `${safeId}.json`);
+      if (fs.existsSync(stateFile)) continue;
+
+      // Derive session name from cwd basename + short session ID
+      const cwd = native.cwd || '';
+      const dirName = cwd ? path.basename(cwd) : 'unknown';
+      const shortId = native.sessionId.slice(0, 4);
+      const name = `${dirName}-${shortId}`;
+
+      // Convert startedAt (ms epoch) to ISO 8601
+      const createdAt = native.startedAt
+        ? new Date(native.startedAt).toISOString()
+        : new Date().toISOString();
+
+      const state = {
+        version: 1,
+        session_id: native.sessionId,
+        name,
+        status: 'starting',
+        cwd,
+        pid: native.pid,
+        last_activity: createdAt,
+        last_message_preview: '',
+        created_at: createdAt,
+        ai_name_generated: false,
+        tty_path: '',
+      };
+
+      fs.writeFileSync(stateFile, JSON.stringify(state, null, 2));
+      created++;
+      console.log(`Created tab-state from native session: ${native.sessionId} (pid ${native.pid})`);
+    } catch (err) {
+      // Skip unreadable native session files
+    }
+  }
+
+  if (created > 0) {
+    scheduleSSEBroadcast();
+  }
+}
+
+// Watch native sessions directory for new/removed session files
+let sessionsSyncTimer = null;
+
+function scheduleSyncNativeSessions() {
+  if (sessionsSyncTimer) {
+    clearTimeout(sessionsSyncTimer);
+  }
+  sessionsSyncTimer = setTimeout(() => {
+    sessionsSyncTimer = null;
+    syncNativeSessions();
+  }, SSE_DEBOUNCE_MS);
+}
+
+try {
+  fs.watch(SESSIONS_DIR, (eventType, filename) => {
+    if (!filename) return;
+    if (filename.endsWith('.json')) {
+      scheduleSyncNativeSessions();
+    }
+  });
+} catch (err) {
+  console.warn('Could not watch native sessions directory:', err.message);
+}
+
+// Sync on startup to catch sessions that started before the server
+syncNativeSessions();
+
 // --- Static file serving ---
 const DIST_DIR = path.join(DASHBOARD_DIR, 'dist');
 
@@ -199,18 +308,6 @@ if (fs.existsSync(DIST_DIR)) {
 }
 
 // --- File watching with fs.watch ---
-let debounceTimer = null;
-
-function scheduleSSEBroadcast() {
-  if (debounceTimer) {
-    clearTimeout(debounceTimer);
-  }
-  debounceTimer = setTimeout(() => {
-    debounceTimer = null;
-    broadcastSSE('session-update', { type: 'reload' });
-  }, SSE_DEBOUNCE_MS);
-}
-
 fs.watch(STATE_DIR, (eventType, filename) => {
   if (!filename) return;
   if (filename.endsWith('.json') && !filename.startsWith('.')) {
@@ -244,6 +341,7 @@ function pruneDeadSessions() {
 
 // --- PID liveness check interval — B4.1 ---
 setInterval(() => {
+  syncNativeSessions();
   refreshPidLiveness();
   pruneDeadSessions();
   broadcastSSE('session-update', { type: 'reload' });
@@ -253,6 +351,7 @@ setInterval(() => {
 const server = app.listen(PORT, BIND_ADDRESS, () => {
   console.log(`Claude Dashboard server listening on http://${BIND_ADDRESS}:${PORT}`);
   console.log(`Watching state files in: ${STATE_DIR}`);
+  console.log(`Watching native sessions in: ${SESSIONS_DIR}`);
 });
 
 server.on('error', (err) => {
