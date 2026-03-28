@@ -231,6 +231,8 @@ try {
     if (!filename) return;
     if (filename.endsWith('.json')) {
       scheduleSyncNativeSessions();
+      // When a native session file is removed, prune orphaned tab-state
+      setTimeout(() => pruneOrphanedTabState(), SSE_DEBOUNCE_MS + 100);
     }
   });
 } catch (err) {
@@ -239,6 +241,7 @@ try {
 
 // Sync on startup to catch sessions that started before the server
 syncNativeSessions();
+pruneOrphanedTabState();
 
 // --- Static file serving ---
 const DIST_DIR = path.join(DASHBOARD_DIR, 'dist');
@@ -315,6 +318,46 @@ fs.watch(STATE_DIR, (eventType, filename) => {
   }
 });
 
+// --- Prune orphaned tab-state entries not in native sessions ---
+function pruneOrphanedTabState() {
+  // Collect all session IDs from native session files (source of truth)
+  const nativeSessionIds = new Set();
+  try {
+    const nativeFiles = fs.readdirSync(SESSIONS_DIR);
+    for (const file of nativeFiles) {
+      if (!file.endsWith('.json')) continue;
+      try {
+        const content = fs.readFileSync(path.join(SESSIONS_DIR, file), 'utf8');
+        const native = JSON.parse(content);
+        if (native.sessionId) nativeSessionIds.add(native.sessionId);
+      } catch (_) {}
+    }
+  } catch (_) {
+    return; // Can't read native sessions — skip
+  }
+
+  // Remove tab-state entries with no native session and a dead PID
+  let pruned = 0;
+  const sessions = readAllSessions();
+  for (const session of sessions) {
+    if (!session.session_id) continue;
+    if (nativeSessionIds.has(session.session_id)) continue;
+    if (session.pid && checkPidAlive(session.pid)) continue;
+
+    const safeId = session.session_id.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const filePath = path.join(STATE_DIR, `${safeId}.json`);
+    try {
+      fs.unlinkSync(filePath);
+      pruned++;
+      console.log(`Pruned orphaned tab-state: ${session.session_id} (no native session, pid ${session.pid} dead)`);
+    } catch (_) {}
+  }
+
+  if (pruned > 0) {
+    scheduleSSEBroadcast();
+  }
+}
+
 // --- Auto-prune dead sessions past grace period ---
 function pruneDeadSessions() {
   const now = Date.now();
@@ -344,6 +387,7 @@ setInterval(() => {
   syncNativeSessions();
   refreshPidLiveness();
   pruneDeadSessions();
+  pruneOrphanedTabState();
   broadcastSSE('session-update', { type: 'reload' });
 }, PID_LIVENESS_INTERVAL_MS);
 
