@@ -10,7 +10,7 @@
 # VS Code terminal profile shortcuts).
 #
 # Usage: echo '<json>' | bash tab-state.sh <event>
-# Events: init, working, stop, error, attention, cleanup
+# Events: init, working, stop, error, attention, tooluse, cleanup
 
 set -euo pipefail
 
@@ -384,6 +384,21 @@ case "$EVENT" in
       '.status = $status | .last_activity = $last_activity' \
       "$STATE_FILE")
 
+    atomic_write "$STATE"
+    ;;
+
+  tooluse)
+    # Lightweight status reset: ensures status returns to "working" after a
+    # Notification (tool-approval prompt). No AI-name generation — just status.
+    if [ ! -f "$STATE_FILE" ]; then
+      exit 0
+    fi
+    NOW="$(now_iso)"
+    STATE=$(jq \
+      --arg status "working" \
+      --arg last_activity "$NOW" \
+      '.status = $status | .last_activity = $last_activity' \
+      "$STATE_FILE")
     atomic_write "$STATE"
     ;;
 

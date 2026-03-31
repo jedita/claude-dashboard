@@ -151,6 +151,23 @@ export function useSessions() {
     }
   }
 
+  async function updateAnnotations(sessionId, { note, color } = {}) {
+    try {
+      const body = {}
+      if (note !== undefined) body.note = note
+      if (color !== undefined) body.color = color
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/annotations`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      await fetchSessions()
+    } catch (err) {
+      console.error('Failed to update annotations:', err)
+    }
+  }
+
   return {
     sessions,
     groupedSessions,
@@ -160,6 +177,7 @@ export function useSessions() {
     workspaceOverrides,
     fetchSessions,
     dismissSession,
+    updateAnnotations,
     restartServer,
     restarting,
   }

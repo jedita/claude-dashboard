@@ -18,6 +18,9 @@ const SSE_DEBOUNCE_MS = 300;
 const PID_LIVENESS_INTERVAL_MS = 15_000;
 const PRUNE_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const DEAD_SESSION_GRACE_MS = 2 * 60 * 1000; // 2 minutes after last activity before removing dead sessions
+const CONFIG_FILE = path.join(__dirname, "..", "dashboard", "public", "config.json");
+// Also check the built dashboard location
+const CONFIG_FILE_DIST = path.join(DASHBOARD_DIR, "dist", "config.json");
 
 // --- Ensure directories exist ---
 fs.mkdirSync(STATE_DIR, { recursive: true });
@@ -30,10 +33,16 @@ function pruneOldStateFiles() {
     const files = fs.readdirSync(STATE_DIR);
     for (const file of files) {
       if (!file.endsWith(".json")) continue;
+      if (file.endsWith(".user.json")) continue; // Never prune user-data files by age
       const filePath = path.join(STATE_DIR, file);
       try {
         const stat = fs.statSync(filePath);
         if (now - stat.mtimeMs > PRUNE_AGE_MS) {
+          // Check if this session has annotations — if so, preserve it
+          const sessionId = file.replace(/\.json$/, "");
+          const userData = readUserData(sessionId);
+          if (hasAnnotations(userData)) continue;
+
           fs.unlinkSync(filePath);
           console.log(`Pruned stale state file: ${file}`);
         }
@@ -85,6 +94,66 @@ function refreshPidLiveness() {
   }
 }
 
+// --- Config reader ---
+function readConfig() {
+  for (const cfgPath of [CONFIG_FILE, CONFIG_FILE_DIST]) {
+    try {
+      const content = fs.readFileSync(cfgPath, "utf8");
+      return JSON.parse(content);
+    } catch (_) {}
+  }
+  return {};
+}
+
+// --- User-data file helpers ---
+function userDataPath(sessionId) {
+  const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  return path.join(STATE_DIR, `${safeId}.user.json`);
+}
+
+function readUserData(sessionId) {
+  try {
+    const content = fs.readFileSync(userDataPath(sessionId), "utf8");
+    return JSON.parse(content);
+  } catch (_) {
+    return null;
+  }
+}
+
+function writeUserData(sessionId, data) {
+  fs.writeFileSync(userDataPath(sessionId), JSON.stringify(data, null, 2));
+}
+
+function deleteUserData(sessionId) {
+  try {
+    fs.unlinkSync(userDataPath(sessionId));
+  } catch (_) {}
+}
+
+function hasAnnotations(userData) {
+  if (!userData) return false;
+  return !!(userData.note || userData.color);
+}
+
+function readAllUserData() {
+  const result = new Map();
+  try {
+    const files = fs.readdirSync(STATE_DIR);
+    for (const file of files) {
+      if (!file.endsWith(".user.json")) continue;
+      const filePath = path.join(STATE_DIR, file);
+      try {
+        const content = fs.readFileSync(filePath, "utf8");
+        const data = JSON.parse(content);
+        if (data.session_id) {
+          result.set(data.session_id, data);
+        }
+      } catch (_) {}
+    }
+  } catch (_) {}
+  return result;
+}
+
 // --- Read session state files ---
 function readAllSessions() {
   const sessions = [];
@@ -97,6 +166,7 @@ function readAllSessions() {
 
   for (const file of files) {
     if (!file.endsWith(".json")) continue;
+    if (file.endsWith(".user.json")) continue;
     if (file.startsWith(".")) continue;
     const filePath = path.join(STATE_DIR, file);
     try {
@@ -113,7 +183,14 @@ function readAllSessions() {
 
 function getSessionsWithLiveness() {
   const sessions = readAllSessions();
-  return sessions.map((session) => {
+  const allUserData = readAllUserData();
+  const seenSessionIds = new Set();
+  const config = readConfig();
+  const preserveUnannotated = config.preserveUnannotatedCards === true;
+
+  const result = [];
+
+  for (const session of sessions) {
     let alive;
     if (session.pid) {
       if (pidLivenessCache.has(session.pid)) {
@@ -125,8 +202,36 @@ function getSessionsWithLiveness() {
     } else {
       alive = false;
     }
-    return { ...session, alive };
-  });
+
+    const userData = allUserData.get(session.session_id);
+    const merged = { ...session, alive };
+    if (userData) {
+      if (userData.note) merged.note = userData.note;
+      if (userData.color) merged.color = userData.color;
+    }
+
+    if (session.session_id) seenSessionIds.add(session.session_id);
+    result.push(merged);
+  }
+
+  // Add orphan user-data sessions (user-data exists but no tab-state)
+  for (const [sessionId, userData] of allUserData) {
+    if (seenSessionIds.has(sessionId)) continue;
+    if (!hasAnnotations(userData)) continue;
+    const snapshot = userData.snapshot || {};
+    result.push({
+      session_id: sessionId,
+      name: snapshot.name || sessionId,
+      cwd: snapshot.cwd || "",
+      created_at: snapshot.created_at || "",
+      status: "done",
+      alive: false,
+      note: userData.note || null,
+      color: userData.color || null,
+    });
+  }
+
+  return result;
 }
 
 // --- SSE broadcast (moved up so native session sync can use it) ---
@@ -247,6 +352,8 @@ const DIST_DIR = path.join(DASHBOARD_DIR, "dist");
 // --- Express app ---
 const app = express();
 
+app.use(express.json());
+
 // Health endpoint — B1.1, B1.2
 app.get("/api/health", (req, res) => {
   res.json({ ok: true });
@@ -258,20 +365,92 @@ app.get("/api/sessions", (req, res) => {
   res.json(sessions);
 });
 
-// Dismiss a session — removes its state file
-app.delete("/api/sessions/:id", (req, res) => {
-  const safeId = req.params.id.replace(/[^a-zA-Z0-9_-]/g, "_");
-  const filePath = path.join(STATE_DIR, `${safeId}.json`);
-  try {
-    fs.unlinkSync(filePath);
-    res.json({ ok: true });
-  } catch (err) {
-    if (err.code === "ENOENT") {
-      res.status(404).json({ error: "Session not found" });
+// Annotations endpoint — update note/color for a session
+app.put("/api/sessions/:id/annotations", (req, res) => {
+  const sessionId = req.params.id;
+  if (!req.body) {
+    return res.status(400).json({ error: "Request body is required" });
+  }
+  const { note, color } = req.body;
+
+  // Read existing user-data or create new
+  let userData = readUserData(sessionId) || { session_id: sessionId };
+
+  // Populate snapshot on first creation
+  if (!userData.snapshot) {
+    const sessions = readAllSessions();
+    const session = sessions.find((s) => s.session_id === sessionId);
+    if (session) {
+      userData.snapshot = {
+        name: session.name || sessionId,
+        cwd: session.cwd || "",
+        created_at: session.created_at || "",
+      };
     } else {
-      res.status(500).json({ error: err.message });
+      userData.snapshot = { name: sessionId, cwd: "", created_at: "" };
     }
   }
+
+  // Update fields (undefined = leave unchanged, null = clear)
+  if (note !== undefined) userData.note = note;
+  if (color !== undefined) userData.color = color;
+
+  // If both cleared, delete the user-data file
+  if (!userData.note && !userData.color) {
+    deleteUserData(sessionId);
+    console.log(`Annotations cleared for session: ${sessionId}`);
+  } else {
+    writeUserData(sessionId, userData);
+    console.log(`Annotations saved for session: ${sessionId} (note: ${!!userData.note}, color: ${!!userData.color})`);
+  }
+
+  // Build merged response
+  const allSessions = getSessionsWithLiveness();
+  const merged = allSessions.find((s) => s.session_id === sessionId);
+
+  // Broadcast update
+  broadcastSSE("session-update", { type: "reload" });
+
+  if (merged) {
+    res.json(merged);
+  } else {
+    res.json({ session_id: sessionId, note: userData.note, color: userData.color });
+  }
+});
+
+// Dismiss a session — removes its state file and user-data
+app.delete("/api/sessions/:id", (req, res) => {
+  const sessionId = req.params.id;
+  const safeId = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_");
+
+  // Check if session is still alive
+  const sessions = getSessionsWithLiveness();
+  const session = sessions.find((s) => s.session_id === sessionId);
+  if (session && session.alive) {
+    return res.status(400).json({ error: "Cannot dismiss an active session" });
+  }
+
+  const filePath = path.join(STATE_DIR, `${safeId}.json`);
+  let deleted = false;
+  try {
+    fs.unlinkSync(filePath);
+    deleted = true;
+  } catch (err) {
+    if (err.code !== "ENOENT") {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
+  // Also delete user-data file
+  const hadUserData = !!readUserData(sessionId);
+  deleteUserData(sessionId);
+
+  if (!deleted && !hadUserData) {
+    return res.status(404).json({ error: "Session not found" });
+  }
+
+  broadcastSSE("session-update", { type: "reload" });
+  res.status(204).end();
 });
 
 // Restart server — spawns a new instance and exits
@@ -344,6 +523,9 @@ fs.watch(STATE_DIR, (eventType, filename) => {
   }
 });
 
+// Note: .user.json changes also match the above pattern, which is fine —
+// they trigger a broadcast so other dashboard tabs see annotation updates.
+
 // --- Prune orphaned tab-state entries not in native sessions ---
 function pruneOrphanedTabState() {
   // Collect all session IDs from native session files (source of truth)
@@ -365,10 +547,20 @@ function pruneOrphanedTabState() {
   // Remove tab-state entries with no native session and a dead PID
   let pruned = 0;
   const sessions = readAllSessions();
+  const config = readConfig();
+  const preserveUnannotated = config.preserveUnannotatedCards === true;
+
   for (const session of sessions) {
     if (!session.session_id) continue;
     if (nativeSessionIds.has(session.session_id)) continue;
     if (session.pid && checkPidAlive(session.pid)) continue;
+
+    // If session has annotations, always preserve
+    const userData = readUserData(session.session_id);
+    if (hasAnnotations(userData)) continue;
+
+    // If preserveUnannotatedCards is true, preserve all
+    if (preserveUnannotated) continue;
 
     const safeId = session.session_id.replace(/[^a-zA-Z0-9_-]/g, "_");
     const filePath = path.join(STATE_DIR, `${safeId}.json`);
@@ -390,6 +582,9 @@ function pruneOrphanedTabState() {
 function pruneDeadSessions() {
   const now = Date.now();
   const sessions = readAllSessions();
+  const config = readConfig();
+  const preserveUnannotated = config.preserveUnannotatedCards === true;
+
   for (const session of sessions) {
     if (!session.pid || !session.session_id) continue;
     const alive = checkPidAlive(session.pid);
@@ -400,6 +595,13 @@ function pruneDeadSessions() {
       ? new Date(session.last_activity).getTime()
       : 0;
     if (now - lastActivity > DEAD_SESSION_GRACE_MS) {
+      // If session has annotations, always preserve
+      const userData = readUserData(session.session_id);
+      if (hasAnnotations(userData)) continue;
+
+      // If preserveUnannotatedCards is true, preserve all closed sessions
+      if (preserveUnannotated) continue;
+
       const safeId = session.session_id.replace(/[^a-zA-Z0-9_-]/g, "_");
       const filePath = path.join(STATE_DIR, `${safeId}.json`);
       try {

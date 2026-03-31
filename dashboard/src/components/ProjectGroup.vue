@@ -9,6 +9,7 @@
         :tick="tick"
         :workspace-overrides="workspaceOverrides"
         @dismiss="id => emit('dismiss', id)"
+        @update-annotations="(id, data) => emit('update-annotations', id, data)"
       />
     </div>
   </section>
@@ -24,7 +25,7 @@ defineProps({
   workspaceOverrides: { type: Object, default: () => ({}) },
 })
 
-const emit = defineEmits(['dismiss'])
+const emit = defineEmits(['dismiss', 'update-annotations'])
 </script>
 
 <style scoped>

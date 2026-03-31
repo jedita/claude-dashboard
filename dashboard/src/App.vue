@@ -28,6 +28,7 @@
           :tick="tick"
           :workspace-overrides="workspaceOverrides"
           @dismiss="dismissSession"
+          @update-annotations="updateAnnotations"
         />
       </template>
     </main>
@@ -40,7 +41,7 @@ import { useRelativeTime } from './composables/useRelativeTime.js'
 import ProjectGroup from './components/ProjectGroup.vue'
 import ConnectionStatus from './components/ConnectionStatus.vue'
 
-const { sessions, groupedSessions, loading, error, connectionStatus, workspaceOverrides, dismissSession, restartServer, restarting } = useSessions()
+const { sessions, groupedSessions, loading, error, connectionStatus, workspaceOverrides, dismissSession, updateAnnotations, restartServer, restarting } = useSessions()
 const { tick } = useRelativeTime()
 
 function handleRestart() {

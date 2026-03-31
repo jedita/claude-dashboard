@@ -60,6 +60,8 @@ cat <<'HOOKSJSON'
       "command": "bash ~/.claude/hooks/tab-state.sh stop", "async": true }] }],
     "StopFailure": [{ "matcher": "", "hooks": [{ "type": "command",
       "command": "bash ~/.claude/hooks/tab-state.sh error", "async": true }] }],
+    "PreToolUse": [{ "matcher": "", "hooks": [{ "type": "command",
+      "command": "bash ~/.claude/hooks/tab-state.sh tooluse", "async": true }] }],
     "Notification": [{ "matcher": "", "hooks": [{ "type": "command",
       "command": "bash ~/.claude/hooks/tab-state.sh attention", "async": true }] }],
     "SessionEnd": [{ "matcher": "", "hooks": [{ "type": "command",
